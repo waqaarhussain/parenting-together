@@ -25,6 +25,7 @@ install -m 644 deploy/nginx.conf /etc/nginx/sites-available/parenting-together
 ln -sfn /etc/nginx/sites-available/parenting-together /etc/nginx/sites-enabled/parenting-together
 rm -f /etc/nginx/sites-enabled/default
 install -m 755 update-live.sh /usr/local/bin/update-live
+install -m 755 reset-parenting-together.sh /usr/local/bin/reset-parenting-together
 
 systemctl daemon-reload
 nginx -t
