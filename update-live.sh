@@ -6,7 +6,6 @@ if [ "$(id -u)" -ne 0 ]; then
 fi
 
 APP_DIR="/opt/parenting-together"
-REPO="https://github.com/waqaarhussain/parenting-together.git"
 
 if [ ! -d "$APP_DIR/.git" ]; then
   echo "Parenting Together is not installed. Run the fresh installer first."
@@ -15,11 +14,11 @@ fi
 
 echo "Updating Parenting Together..."
 cd "$APP_DIR"
-git fetch origin main
-git reset --hard origin/main
+git -c safe.directory="$APP_DIR" fetch origin main
+git -c safe.directory="$APP_DIR" reset --hard origin/main
 
 "$APP_DIR/.venv/bin/pip" install --disable-pip-version-check -q -r requirements.txt
-chown -R www-data:www-data "$APP_DIR"
+chown -R root:root "$APP_DIR"
 
 install -m 644 deploy/parenting-together.service /etc/systemd/system/parenting-together.service
 install -m 644 deploy/nginx.conf /etc/nginx/sites-available/parenting-together
