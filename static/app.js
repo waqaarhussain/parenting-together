@@ -160,15 +160,15 @@ async function render() {
   var page = document.getElementById("page");
   page.innerHTML = '<div class="empty"><strong>Loading</strong>Pulling your family space together…</div>';
   try {
-    if (state.page === "home") return renderHome();
-    if (state.page === "messages") return renderMessages();
-    if (state.page === "calendar") return renderCalendar();
-    if (state.page === "handovers") return renderHandovers();
-    if (state.page === "decisions") return renderDecisions();
-    if (state.page === "expenses") return renderExpenses();
-    if (state.page === "evidence") return renderEvidence();
-    if (state.page === "rules") return renderRules();
-    if (state.page === "search") return renderSearch();
+    if (state.page === "home") return await renderHome();
+    if (state.page === "messages") return await renderMessages();
+    if (state.page === "calendar") return await renderCalendar();
+    if (state.page === "handovers") return await renderHandovers();
+    if (state.page === "decisions") return await renderDecisions();
+    if (state.page === "expenses") return await renderExpenses();
+    if (state.page === "evidence") return await renderEvidence();
+    if (state.page === "rules") return await renderRules();
+    if (state.page === "search") return await renderSearch();
   } catch (e) {
     page.innerHTML = '<div class="empty"><strong>Could not load this page</strong>'+esc(e.message)+'</div>';
   }
@@ -240,7 +240,7 @@ async function renderMessages() {
     '<form id="message-form" class="chat-compose"><textarea name="body" maxlength="5000" placeholder="Write a message…" required></textarea><button class="send-button" aria-label="Send">'+icons.send+'</button></form></div>';
   var box=document.getElementById("messages"); box.scrollTop=box.scrollHeight;
   var form=document.getElementById("message-form");
-  form.onsubmit=async function(e){e.preventDefault();var body=form.body.value.trim();if(!body)return;form.body.value="";try{await api("/api/messages",{method:"POST",json:{body:body}});await renderMessages();}catch(err){form.body.value=body;toast(err.message,"error");}};
+  form.onsubmit=async function(e){e.preventDefault();var input=form.elements.namedItem("body"),body=input.value.trim();if(!body)return;input.value="";try{await api("/api/messages",{method:"POST",json:{body:body}});await renderMessages();}catch(err){input.value=body;toast(err.message,"error");}};
 }
 
 async function renderCalendar() {
