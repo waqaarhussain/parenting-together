@@ -384,7 +384,7 @@ def join_family():
         if current:
             member_count = conn.execute("SELECT COUNT(*) c FROM family_members WHERE family_id=?", (current,)).fetchone()["c"]
             activity_count = 0
-            for table in ("messages", "events", "handovers", "decisions", "expenses"):
+            for table in ("messages", "events", "handovers", "decisions", "expenses", "children", "rules"):
                 activity_count += conn.execute("SELECT COUNT(*) c FROM " + table + " WHERE family_id=?", (current,)).fetchone()["c"]
             if member_count == 1 and activity_count == 0:
                 conn.execute("DELETE FROM family_members WHERE family_id=? AND user_id=?", (current, uid))
