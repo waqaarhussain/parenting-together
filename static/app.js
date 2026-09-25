@@ -1,4 +1,8 @@
-var state = { me: null, page: "home", cache: {}, calendarCursor: new Date(), theme: localStorage.getItem("pt-theme") || "system" };
+var state = { me: null, page: "home", cache: {}, chat: null, unread: 0, calendarCursor: new Date(), theme: localStorage.getItem("pt-theme") || "system" };
+var liveTimer = null;
+var liveBusy = false;
+var typingLastSent = 0;
+var typingActive = false;
 
 var icons = {
   home:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M3 10.5 12 3l9 7.5v9a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 19.5z"/><path d="M9 21v-7h6v7"/></svg>',
@@ -18,7 +22,7 @@ var icons = {
 
 var pages = [
   ["home","Home","Overview",icons.home],
-  ["messages","Messages","Immutable chat",icons.chat],
+  ["messages","Messages","Family chat",icons.chat],
   ["calendar","Calendar","Shared plans",icons.calendar],
   ["handovers","Handovers","Pickups & drop-offs",icons.swap],
   ["decisions","Decisions","Clear approvals",icons.check],
@@ -121,6 +125,9 @@ async function bootstrap() {
 
 function showAuth() {
   state.me = null;
+  state.chat = null;
+  if (liveTimer) clearInterval(liveTimer);
+  liveTimer = null;
   document.getElementById("auth-view").classList.remove("hidden");
   document.getElementById("app-view").classList.add("hidden");
 }
@@ -131,22 +138,65 @@ function showApp() {
   document.getElementById("family-card").innerHTML = '<strong>'+esc(state.me.family.name)+'</strong><span>'+state.me.members.length+' parent'+(state.me.members.length===1?"":"s")+' · '+state.me.children.length+' child profile'+(state.me.children.length===1?"":"s")+'</span>';
   renderNav();
   applyTheme();
+  if (!liveTimer) liveTimer = setInterval(refreshLiveState, 2500);
+  refreshLiveState();
 }
 
 function renderNav() {
   var desktop = document.getElementById("desktop-nav");
   desktop.innerHTML = pages.map(function(p){
-    return '<button class="nav-button '+(state.page===p[0]?"active":"")+'" data-page="'+p[0]+'">'+p[3]+'<span>'+p[1]+'</span></button>';
+    return '<button class="nav-button '+(state.page===p[0]?"active":"")+'" data-page="'+p[0]+'">'+p[3]+'<span>'+p[1]+'</span>'+(p[0]==="messages"?'<span class="unread-badge hidden"></span>':'')+'</button>';
   }).join("");
   desktop.querySelectorAll("[data-page]").forEach(function(b){ b.onclick=function(){ navigate(b.dataset.page); }; });
   var mobileKeys = ["home","messages","calendar","evidence","search"];
   document.getElementById("mobile-nav").innerHTML = mobileKeys.map(function(k){
     var p = pages.find(function(x){return x[0]===k;});
-    return '<button class="'+(state.page===k?"active":"")+'" data-page="'+k+'">'+p[3]+'<span>'+p[1]+'</span></button>';
+    return '<button class="'+(state.page===k?"active":"")+'" data-page="'+k+'">'+p[3]+'<span>'+p[1]+'</span>'+(k==="messages"?'<span class="unread-badge hidden"></span>':'')+'</button>';
   }).join("");
   document.querySelectorAll("#mobile-nav [data-page]").forEach(function(b){ b.onclick=function(){ navigate(b.dataset.page); }; });
+  updateUnreadBadges();
+}
+function updateUnreadBadges() {
+  document.querySelectorAll('[data-page="messages"] .unread-badge').forEach(function(badge){
+    badge.textContent = state.unread > 99 ? "99+" : String(state.unread);
+    badge.classList.toggle("hidden", state.unread === 0);
+  });
+}
+async function refreshLiveState() {
+  if (liveBusy || !state.me || document.hidden) return;
+  liveBusy = true;
+  try {
+    if (state.page === "messages" && state.chat) await pollChat();
+    var status = await api("/api/messages/status");
+    state.unread = status.unread;
+    updateUnreadBadges();
+    if (state.page === "messages" && state.chat) {
+      var indicator = document.getElementById("typing-indicator");
+      if (indicator) {
+        indicator.textContent = status.typing_name ? status.typing_name + " is typing…" : "";
+        indicator.classList.toggle("hidden", !status.typing_name);
+      }
+      Object.keys(status.reads).forEach(function(id){
+        var item = state.chat.messages.find(function(message){return String(message.id) === id;});
+        if (item && item.read_at !== status.reads[id]) {
+          item.read_at = status.reads[id];
+          var meta = document.querySelector('[data-message-id="'+id+'"] .message-meta');
+          if (meta) meta.textContent = messageMeta(item);
+        }
+      });
+    }
+  } catch (e) {
+    if (e.message === "Sign in required") {
+      showAuth();
+      toast("Your session ended. Sign in again.", "error");
+    }
+  } finally {
+    liveBusy = false;
+  }
 }
 async function navigate(page) {
+  if (state.page === "messages" && page !== "messages") stopTyping();
+  if (page !== "messages") state.chat = null;
   state.page = page;
   renderNav();
   await render();
@@ -179,30 +229,24 @@ async function render() {
 
 async function getAll() {
   var data = await Promise.all([
-    api("/api/events"), api("/api/handovers"), api("/api/decisions"),
-    api("/api/expenses"), api("/api/timeline?limit=20"), api("/api/rules")
+    api("/api/handovers"), api("/api/decisions"), api("/api/expenses"),
+    api("/api/timeline?limit=20"), api("/api/rules")
   ]);
-  return {events:data[0],handovers:data[1],decisions:data[2],expenses:data[3],timeline:data[4],rules:data[5]};
+  return {handovers:data[0],decisions:data[1],expenses:data[2],timeline:data[3],rules:data[4]};
 }
 
 async function renderHome() {
   var d = await getAll();
   var pending = d.handovers.filter(function(x){return x.status==="pending";}).length + d.decisions.filter(function(x){return x.status==="pending";}).length + d.expenses.filter(function(x){return x.status==="pending";}).length;
-  var upcomingEvents = d.events.filter(function(x){return isFutureEvent(x.start_at);});
-  var upcoming = upcomingEvents.slice(0,5);
   var connected = state.me.members.length > 1;
   document.getElementById("page").innerHTML =
     '<div class="page-grid">'+
-      '<section class="card welcome-card span-8"><p class="eyebrow">YOUR FAMILY SPACE</p><h3>Hi '+esc(state.me.user.name.split(" ")[0])+'.</h3><p>'+ (connected ? 'Everything shared between both parents stays organised, timestamped and easy to find.' : 'You are in solo mode. Start organising now, then connect the other parent whenever you are ready.') +'</p><div class="quick-actions"><button class="quick-action" id="qa-event">Add Event</button><button class="quick-action" id="qa-invite">'+(connected?'Family code':'Connect co-parent')+'</button><button class="quick-action" id="qa-child">Add child</button></div></section>'+
+      '<section class="card welcome-card span-8"><p class="eyebrow">YOUR FAMILY SPACE</p><h3>Hi '+esc(state.me.user.name.split(" ")[0])+'.</h3><p>'+ (connected ? 'Everything shared between both parents stays organised, timestamped and easy to find.' : 'You are in solo mode. Start organising now, then connect the other parent whenever you are ready.') +'</p><div class="quick-actions"><button class="quick-action" id="qa-invite">'+(connected?'Family code':'Connect co-parent')+'</button><button class="quick-action" id="qa-child">Add child</button></div></section>'+
       '<section class="metric-card span-4"><div class="metric-label">Open items</div><div class="metric-value">'+pending+'</div><div class="metric-note">Handovers, decisions and expenses awaiting action.</div></section>'+
-      '<section class="metric-card span-4"><div class="metric-label">Children</div><div class="metric-value">'+state.me.children.length+'</div><div class="metric-note">'+(state.me.children.length?state.me.children.map(function(c){return esc(c.name);}).join(" · "):"Add profiles to personalise the family space.")+'</div></section>'+
-      '<section class="metric-card span-4"><div class="metric-label">Upcoming events</div><div class="metric-value">'+upcomingEvents.length+'</div><div class="metric-note">Calendar events that have not started yet.</div></section>'+
-      '<section class="metric-card span-4"><div class="metric-label">Evidence records</div><div class="metric-value">'+d.timeline.length+(d.timeline.length===20?"+":"")+'</div><div class="metric-note">Recent immutable audit events.</div></section>'+
-      '<section class="card span-6"><div class="card-head"><div><h3>Upcoming events</h3><p>Shared events that have not started yet.</p></div><button class="tiny-button primary" id="home-add-event">+ Add</button></div>'+listEvents(upcoming)+'</section>'+
-      '<section class="card span-6"><div class="card-head"><div><h3>Recent activity</h3><p>A calm timeline of what changed.</p></div><button class="tiny-button" id="home-evidence">View all</button></div>'+timelineHtml(d.timeline.slice(0,6))+'</section>'+
+      '<section class="metric-card span-6"><div class="metric-label">Children</div><div class="metric-value">'+state.me.children.length+'</div><div class="metric-note">'+(state.me.children.length?state.me.children.map(function(c){return esc(c.name);}).join(" · "):"Add profiles to personalise the family space.")+'</div></section>'+
+      '<section class="metric-card span-6"><div class="metric-label">Evidence records</div><div class="metric-value">'+d.timeline.length+(d.timeline.length===20?"+":"")+'</div><div class="metric-note">Recent activity saved in the family record.</div></section>'+
+      '<section class="card span-12"><div class="card-head"><div><h3>Recent activity</h3><p>Newest activity first.</p></div><button class="tiny-button" id="home-evidence">View all</button></div>'+timelineHtml(d.timeline.slice(0,6))+'</section>'+
     '</div>';
-  document.getElementById("qa-event").onclick=openEventModal;
-  document.getElementById("home-add-event").onclick=openEventModal;
   document.getElementById("qa-invite").onclick=openInviteModal;
   document.getElementById("qa-child").onclick=openChildModal;
   document.getElementById("home-evidence").onclick=function(){navigate("evidence");};
@@ -230,20 +274,119 @@ function openChildModal() {
   });
 }
 
+function messageMeta(message) {
+  var mine = message.sender_id === state.me.user.id;
+  return fmt(message.created_at) + (mine ? (message.read_at ? " · Read " + fmt(message.read_at) : " · Sent") : "");
+}
+function messageHtml(message) {
+  var mine = message.sender_id === state.me.user.id;
+  return '<div class="message-row '+(mine?"mine":"")+'" data-message-id="'+message.id+'"><div class="bubble-wrap">'+
+    (!mine?'<div class="message-sender">'+esc(message.sender_name)+'</div>':'')+
+    '<div class="bubble">'+esc(message.body)+'</div><div class="message-meta">'+esc(messageMeta(message))+'</div></div></div>';
+}
+async function pollChat(force) {
+  var chat = state.chat;
+  var box = document.getElementById("messages");
+  if (!chat || !box || chat.polling || state.page !== "messages") return;
+  if (!force && box.scrollHeight - box.scrollTop - box.clientHeight > 100) return;
+  chat.polling = true;
+  try {
+    do {
+      var lastId = chat.messages.length ? chat.messages[chat.messages.length-1].id : 0;
+      var next = await api("/api/messages?after="+lastId);
+      if (state.chat !== chat || state.page !== "messages") return;
+      if (!next.length) break;
+      var empty = box.querySelector(".empty");
+      if (empty) empty.remove();
+      chat.messages.push.apply(chat.messages, next);
+      box.insertAdjacentHTML("beforeend", next.map(messageHtml).join(""));
+      box.scrollTop = box.scrollHeight;
+      if (next.length < 50) break;
+    } while (true);
+  } finally {
+    chat.polling = false;
+  }
+}
+async function loadOlderMessages() {
+  var chat = state.chat;
+  var box = document.getElementById("messages");
+  if (!chat || !box || chat.loadingOlder || !chat.hasOlder || !chat.messages.length) return;
+  chat.loadingOlder = true;
+  try {
+    var older = await api("/api/messages?before="+chat.messages[0].id);
+    if (state.chat !== chat || state.page !== "messages") return;
+    chat.hasOlder = older.length === 50;
+    document.getElementById("load-older").classList.toggle("hidden", !chat.hasOlder);
+    if (older.length) {
+      var previousHeight = box.scrollHeight;
+      chat.messages = older.concat(chat.messages);
+      document.getElementById("history-trigger").insertAdjacentHTML("afterend", older.map(messageHtml).join(""));
+      box.scrollTop += box.scrollHeight - previousHeight;
+      refreshLiveState();
+    }
+  } catch (e) {
+    toast(e.message, "error");
+  } finally {
+    chat.loadingOlder = false;
+  }
+}
+function stopTyping() {
+  if (!typingActive || !state.me) return;
+  typingActive = false;
+  typingLastSent = 0;
+  api("/api/messages/typing", {method:"POST", json:{typing:false}}).catch(function(){});
+}
 async function renderMessages() {
   var messages = await api("/api/messages");
   var verify = await api("/api/messages/verify");
-  var uid = state.me.user.id;
+  if (state.page !== "messages") return;
+  state.chat = {messages:messages, hasOlder:messages.length===50, loadingOlder:false, polling:false};
   document.getElementById("page").innerHTML =
-    '<div class="chat-shell"><div class="chat-header"><div><strong>Family messages</strong><br><span>Sent records cannot be edited or deleted.</span></div><span class="integrity"><i class="integrity-dot"></i>'+(verify.verified?"Chain verified":"Integrity warning")+'</span></div>'+
-    '<div id="messages" class="messages">'+(messages.length?messages.map(function(m){
-      var mine=m.sender_id===uid;
-      return '<div class="message-row '+(mine?"mine":"")+'"><div class="bubble-wrap">'+(!mine?'<div class="message-sender">'+esc(m.sender_name)+'</div>':'')+'<div class="bubble">'+esc(m.body)+'</div><div class="message-meta">'+fmt(m.created_at)+(mine?(m.read_at?' · Read '+fmt(m.read_at):' · Recorded'):'')+' · <span class="message-hash">#'+esc(m.record_hash.slice(0,8))+'</span></div></div></div>';
-    }).join(""):'<div class="empty"><strong>No messages yet</strong>Start the conversation. Once sent, a message becomes part of the permanent record.</div>')+'</div>'+
+    '<div class="chat-shell"><div class="chat-header"><div><strong>Family messages</strong><br><span>Sent messages cannot be edited or deleted.</span><span id="typing-indicator" class="typing-indicator hidden"></span></div><span class="integrity"><i class="integrity-dot"></i>'+(verify.verified?"Records checked":"Record check failed")+'</span></div>'+
+    '<div id="messages" class="messages"><div id="history-trigger"><button id="load-older" class="tiny-button'+(messages.length===50?'':' hidden')+'" type="button">Load earlier messages</button></div>'+
+    (messages.length?messages.map(messageHtml).join(""):'<div class="empty"><strong>No messages yet</strong>Start the conversation. Sent messages stay in the family record.</div>')+'</div>'+
     '<form id="message-form" class="chat-compose"><textarea name="body" maxlength="5000" placeholder="Write a message…" required></textarea><button class="send-button" aria-label="Send">'+icons.send+'</button></form></div>';
-  var box=document.getElementById("messages"); box.scrollTop=box.scrollHeight;
-  var form=document.getElementById("message-form");
-  form.onsubmit=async function(e){e.preventDefault();var input=form.elements.namedItem("body"),body=input.value.trim();if(!body)return;input.value="";try{await api("/api/messages",{method:"POST",json:{body:body}});await renderMessages();}catch(err){input.value=body;toast(err.message,"error");}};
+  var box = document.getElementById("messages");
+  box.scrollTop = box.scrollHeight;
+  box.addEventListener("scroll", function(){
+    if (box.scrollTop < 50) loadOlderMessages();
+    if (box.scrollHeight - box.scrollTop - box.clientHeight < 100) refreshLiveState();
+  });
+  document.getElementById("load-older").onclick = loadOlderMessages;
+  var form = document.getElementById("message-form");
+  var input = form.elements.namedItem("body");
+  input.addEventListener("keydown", function(e){
+    if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+      e.preventDefault();
+      form.requestSubmit();
+    }
+  });
+  input.addEventListener("input", function(){
+    if (!input.value.trim()) { stopTyping(); return; }
+    if (Date.now() - typingLastSent > 2500) {
+      typingLastSent = Date.now();
+      typingActive = true;
+      api("/api/messages/typing", {method:"POST", json:{typing:true}}).catch(function(){});
+    }
+  });
+  input.addEventListener("blur", stopTyping);
+  form.onsubmit = async function(e){
+    e.preventDefault();
+    var body = input.value.trim();
+    if (!body || form.querySelector("button").disabled) return;
+    form.querySelector("button").disabled = true;
+    stopTyping();
+    try {
+      await api("/api/messages", {method:"POST", json:{body:body}});
+      input.value = "";
+      await pollChat(true);
+    } catch (err) {
+      toast(err.message, "error");
+    } finally {
+      form.querySelector("button").disabled = false;
+    }
+  };
+  refreshLiveState();
 }
 
 async function renderCalendar() {
@@ -318,13 +461,13 @@ function openExpenseModal() {
 
 function timelineHtml(items) {
   if(!items.length)return '<div class="empty"><strong>No evidence records yet</strong>Activity will appear here automatically.</div>';
-  return '<div class="timeline">'+items.map(function(x){return '<div class="timeline-item"><div class="timeline-type">'+esc(x.entity_type)+' · '+esc(x.event_type)+'</div><div class="timeline-title">'+esc(x.summary)+'</div><div class="timeline-meta">'+fmt(x.created_at)+' · '+esc(x.actor_name||"System")+' · record #'+x.id+'</div></div>';}).join("")+'</div>';
+  return '<div class="timeline">'+items.map(function(x){return '<div class="timeline-item"><div class="timeline-type">'+esc(x.entity_type)+' · '+esc(x.event_type)+'</div><div class="timeline-title">'+esc(x.summary.replace(/immutable/gi,"saved"))+'</div><div class="timeline-meta">'+fmt(x.created_at)+' · '+esc(x.actor_name||"System")+'</div></div>';}).join("")+'</div>';
 }
 
 async function renderEvidence() {
   var items=await api("/api/timeline?limit=500");
   var verify=await api("/api/messages/verify");
-  document.getElementById("page").innerHTML='<div class="page-grid"><section class="card span-4"><div class="card-head"><div><h3>Integrity</h3><p>Current immutable message chain.</p></div></div><div class="metric-value" style="color:var(--success)">'+(verify.verified?"Verified":"Warning")+'</div><div class="metric-note">'+verify.count+' message record'+(verify.count===1?"":"s")+' · head '+esc((verify.head_hash||"").slice(0,12))+'</div><div class="warning-box">Tamper-evident means the app can detect changes to its message chain. It does not mean automatic court admissibility.</div></section><section class="card span-8"><div class="card-head"><div><h3>Export evidence pack</h3><p>Messages and activity in one chronological PDF.</p></div></div><form id="export-form" class="form-stack"><div class="export-dates"><div class="field"><label>From</label><input name="start" type="date"></div><div class="field"><label>To</label><input name="end" type="date"></div></div><button class="primary-button" type="submit">Download PDF evidence pack</button></form></section><section class="card span-12"><div class="card-head"><div><h3>Evidence timeline</h3><p>Actions are automatically timestamped and cannot be edited through the app.</p></div></div>'+timelineHtml(items)+'</section></div>';
+  document.getElementById("page").innerHTML='<div class="page-grid"><section class="card span-4"><div class="card-head"><div><h3>Message records</h3><p>Checking saved messages for changes.</p></div></div><div class="metric-value" style="color:var(--success)">'+(verify.verified?"Checked":"Warning")+'</div><div class="metric-note">'+verify.count+' saved message'+(verify.count===1?"":"s")+'</div><div class="warning-box">The app can detect changes to its saved messages. This does not mean automatic court admissibility.</div></section><section class="card span-8"><div class="card-head"><div><h3>Export evidence pack</h3><p>Messages and activity in one chronological PDF.</p></div></div><form id="export-form" class="form-stack"><div class="export-dates"><div class="field"><label>From</label><input name="start" type="date"></div><div class="field"><label>To</label><input name="end" type="date"></div></div><button class="primary-button" type="submit">Download PDF evidence pack</button></form></section><section class="card span-12"><div class="card-head"><div><h3>Evidence timeline</h3><p>Actions are automatically timestamped and cannot be edited through the app.</p></div></div>'+timelineHtml(items)+'</section></div>';
   document.getElementById("export-form").onsubmit=function(e){e.preventDefault();var fd=new FormData(e.target),q=new URLSearchParams();if(fd.get("start"))q.set("start",fd.get("start"));if(fd.get("end"))q.set("end",fd.get("end"));window.location="/api/evidence.pdf?"+q.toString();};
 }
 
