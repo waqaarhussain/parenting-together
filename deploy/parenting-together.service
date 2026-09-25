@@ -1,0 +1,18 @@
+[Unit]
+Description=Parenting Together
+After=network.target
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/opt/parenting-together
+EnvironmentFile=/etc/parenting-together.env
+ExecStart=/opt/parenting-together/.venv/bin/gunicorn --workers 2 --threads 4 --bind 127.0.0.1:8765 --access-logfile - --error-logfile - app:app
+Restart=always
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
