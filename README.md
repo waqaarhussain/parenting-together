@@ -22,6 +22,7 @@ A mobile-first co-parenting PWA focused on calm communication, verifiable record
 - SQLite persistence
 - Nginx + Gunicorn production service
 - update-live helper
+- Confirmed full-data reset helper
 
 ## Fresh Ubuntu VPS install
 
@@ -40,6 +41,17 @@ The installer creates a random server secret. There are no default accounts or h
 Run:
 
     update-live
+
+## Resetting all app data
+
+Run:
+
+    reset-parenting-together
+
+Type `RESET` when prompted. This permanently deletes all accounts, families,
+children, messages, calendar events, handovers, decisions, expenses, uploaded
+receipts, rules and evidence records. The app restarts ready for the first new
+account.
 
 ## Locations
 
