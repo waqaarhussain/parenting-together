@@ -794,6 +794,33 @@ def timeline():
     return jsonify([rowdict(x) for x in rows])
 
 
+def search_variants(query):
+    variants = {query}
+    for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y", "%d %b %Y", "%d %B %Y", "%b %d %Y", "%B %d %Y"):
+        try:
+            variants.add(datetime.strptime(query, fmt).strftime("%Y-%m-%d"))
+        except ValueError:
+            pass
+    for fmt in ("%d/%m", "%d %b", "%d %B", "%b %d", "%B %d"):
+        try:
+            parsed = datetime.strptime(query, fmt)
+            variants.add(f"-{parsed.month:02d}-{parsed.day:02d}")
+        except ValueError:
+            pass
+    for fmt in ("%B %Y", "%b %Y", "%m/%Y"):
+        try:
+            variants.add(datetime.strptime(query, fmt).strftime("%Y-%m"))
+        except ValueError:
+            pass
+    for month in range(1, 13):
+        name = datetime(2000, month, 1)
+        if query.casefold() in {name.strftime("%B").casefold(), name.strftime("%b").casefold()}:
+            variants.add(f"-{month:02d}-")
+    if query.startswith("£"):
+        variants.add(query[1:])
+    return ["%" + v.replace("!", "!!").replace("%", "!%").replace("_", "!_") + "%" for v in variants]
+
+
 @app.get("/api/search")
 @login_required
 def search_all():
@@ -801,21 +828,42 @@ def search_all():
     q = request.args.get("q", "").strip()
     if len(q) < 2:
         return jsonify([])
-    like = "%" + q + "%"
+    if len(q) > 100:
+        return jsonify({"error": "Search is limited to 100 characters."}), 400
+    patterns = search_variants(q)
     results = []
     with db() as conn:
         queries = [
-            ("message", "SELECT id,body title,created_at,'' detail FROM messages WHERE family_id=? AND body LIKE ? ORDER BY id DESC LIMIT 25"),
-            ("event", "SELECT id,title,created_at,COALESCE(notes,'') detail FROM events WHERE family_id=? AND (title LIKE ? OR notes LIKE ?) ORDER BY id DESC LIMIT 25"),
-            ("handover", "SELECT id,title,created_at,COALESCE(location,'') detail FROM handovers WHERE family_id=? AND (title LIKE ? OR location LIKE ?) ORDER BY id DESC LIMIT 25"),
-            ("decision", "SELECT id,title,created_at,COALESCE(details,'') detail FROM decisions WHERE family_id=? AND (title LIKE ? OR details LIKE ?) ORDER BY id DESC LIMIT 25"),
-            ("expense", "SELECT id,title,created_at,status detail FROM expenses WHERE family_id=? AND title LIKE ? ORDER BY id DESC LIMIT 25"),
-            ("rule", "SELECT id,title,created_at,value_text detail FROM rules WHERE family_id=? AND (title LIKE ? OR value_text LIKE ?) ORDER BY id DESC LIMIT 25"),
+            ("message", "m", "FROM messages m JOIN users u ON u.id=m.sender_id",
+             "m.id,m.body title,m.created_at,('From '||u.name||' · '||m.created_at) detail",
+             ["m.body", "m.created_at", "m.record_hash", "u.name", "u.email", "(SELECT GROUP_CONCAT(read_at,' ') FROM message_reads WHERE message_id=m.id)"]),
+            ("event", "e", "FROM events e JOIN users u ON u.id=e.creator_id",
+             "e.id,e.title,e.created_at,(e.category||' · '||e.start_at||' · '||COALESCE(e.notes,'')) detail",
+             ["e.title", "e.category", "e.start_at", "e.end_at", "e.notes", "e.created_at", "u.name", "u.email"]),
+            ("handover", "h", "FROM handovers h JOIN users u ON u.id=h.creator_id",
+             "h.id,h.title,h.created_at,(h.status||' · '||h.scheduled_at||' · '||COALESCE(h.location,'')||' · '||COALESCE(h.response_note,'')) detail",
+             ["h.title", "h.scheduled_at", "h.location", "h.status", "h.response_note", "h.completed_at", "h.created_at", "u.name", "u.email"]),
+            ("decision", "d", "FROM decisions d JOIN users u ON u.id=d.creator_id",
+             "d.id,d.title,d.created_at,(d.status||' · '||COALESCE(d.details,'')||' · '||COALESCE(d.deadline,'')||' · '||COALESCE(d.response_note,'')) detail",
+             ["d.title", "d.details", "d.deadline", "d.status", "d.response_note", "d.created_at", "u.name", "u.email"]),
+            ("expense", "e", "FROM expenses e JOIN users u ON u.id=e.creator_id",
+             "e.id,e.title,e.created_at,(printf('£%.2f',e.amount_pence/100.0)||' · '||e.status||' · '||COALESCE(e.due_date,'')||' · '||COALESCE(e.receipt_path,'')) detail",
+             ["e.title", "printf('%.2f',e.amount_pence/100.0)", "e.split_percent", "e.due_date", "e.status", "e.receipt_path", "e.created_at", "u.name", "u.email"]),
+            ("rule", "r", "FROM rules r JOIN users u ON u.id=r.creator_id",
+             "r.id,r.title,r.created_at,(r.rule_type||' · '||r.value_text) detail",
+             ["r.title", "r.rule_type", "r.value_text", "r.created_at", "u.name", "u.email"]),
+            ("child", "c", "FROM children c",
+             "c.id,c.name title,c.created_at,COALESCE(c.birthday,'Child profile') detail",
+             ["c.name", "c.birthday", "c.created_at"]),
+            ("activity", "a", "FROM audit a LEFT JOIN users u ON u.id=a.user_id",
+             "a.id,a.summary title,a.created_at,(a.entity_type||' · '||a.event_type||' · '||COALESCE(u.name,'System')) detail",
+             ["a.summary", "a.entity_type", "a.event_type", "a.metadata_json", "a.created_at", "u.name", "u.email"]),
         ]
-        for kind, sql in queries:
-            count_q = sql.count("?") - 1
-            params = [fid] + [like] * count_q
-            for row in conn.execute(sql, params).fetchall():
+        for kind, alias, source, selection, fields in queries:
+            conditions = ["COALESCE(CAST(" + field + " AS TEXT),'') LIKE ? ESCAPE '!'" for field in fields for _ in patterns]
+            sql = "SELECT " + selection + " " + source + " WHERE " + alias + ".family_id=? AND (" + " OR ".join(conditions) + ") ORDER BY " + alias + ".id DESC LIMIT 100"
+            params = [fid] + patterns * len(fields)
+            for row in conn.execute(sql, params):
                 item = rowdict(row)
                 item["type"] = kind
                 results.append(item)
