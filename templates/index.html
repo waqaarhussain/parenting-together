@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en" data-theme="system">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#111827">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <title>Parenting Together</title>
+  <link rel="manifest" href="/static/manifest.webmanifest">
+  <link rel="icon" href="/static/icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <div id="auth-view" class="auth-shell">
+    <section class="auth-brand">
+      <div class="brand-mark large">PT</div>
+      <div>
+        <p class="eyebrow">CALM. CLEAR. RECORDED.</p>
+        <h1>Parenting together,<br>without the chaos.</h1>
+        <p class="hero-copy">Messages that cannot quietly disappear. Shared plans everyone can see. Decisions, expenses and handovers kept in one calm timeline.</p>
+      </div>
+      <div class="auth-pills">
+        <span>Immutable messages</span><span>Shared calendar</span><span>Evidence timeline</span><span>Structured decisions</span>
+      </div>
+    </section>
+    <section class="auth-panel">
+      <button id="auth-theme" class="icon-button theme-toggle" aria-label="Toggle theme"></button>
+      <div class="auth-card">
+        <div class="auth-tabs">
+          <button class="auth-tab active" data-auth-tab="login">Sign in</button>
+          <button class="auth-tab" data-auth-tab="register">Create account</button>
+        </div>
+        <form id="login-form" class="auth-form">
+          <div class="field"><label>Email</label><input name="email" type="email" autocomplete="email" required placeholder="you@example.com"></div>
+          <div class="field"><label>Password</label><input name="password" type="password" autocomplete="current-password" required placeholder="••••••••"></div>
+          <button class="primary-button wide" type="submit">Sign in</button>
+        </form>
+        <form id="register-form" class="auth-form hidden">
+          <div class="field"><label>Your name</label><input name="name" required placeholder="Alex"></div>
+          <div class="field"><label>Email</label><input name="email" type="email" autocomplete="email" required placeholder="you@example.com"></div>
+          <div class="field"><label>Password</label><input name="password" minlength="8" type="password" autocomplete="new-password" required placeholder="At least 8 characters"></div>
+          <button class="primary-button wide" type="submit">Create family space</button>
+          <p class="microcopy">You can use it solo immediately, or invite the other parent afterwards.</p>
+        </form>
+      </div>
+    </section>
+  </div>
+
+  <div id="app-view" class="app-shell hidden">
+    <aside class="sidebar">
+      <div class="sidebar-brand"><div class="brand-mark">PT</div><div><strong>Parenting</strong><span>Together</span></div></div>
+      <div id="family-card" class="family-card"></div>
+      <nav id="desktop-nav" class="nav-list"></nav>
+      <div class="sidebar-footer">
+        <button id="sidebar-theme" class="soft-button"></button>
+        <button id="logout-button" class="soft-button">Sign out</button>
+      </div>
+    </aside>
+
+    <main class="main-area">
+      <header class="topbar">
+        <div><p id="page-eyebrow" class="eyebrow"></p><h2 id="page-title">Home</h2></div>
+        <div class="topbar-actions">
+          <button id="search-shortcut" class="icon-button" aria-label="Search"></button>
+          <div id="user-avatar" class="avatar"></div>
+        </div>
+      </header>
+      <section id="page" class="page"></section>
+    </main>
+
+    <nav id="mobile-nav" class="mobile-nav"></nav>
+  </div>
+
+  <div id="modal" class="modal-backdrop hidden"><div class="modal-card"><button id="modal-close" class="modal-close">×</button><div id="modal-content"></div></div></div>
+  <div id="toast" class="toast hidden"></div>
+  <script src="/static/app.js"></script>
+</body>
+</html>
