@@ -48,6 +48,7 @@ install -m 644 "$APP_DIR/deploy/nginx.conf" /etc/nginx/sites-available/parenting
 ln -sfn /etc/nginx/sites-available/parenting-together /etc/nginx/sites-enabled/parenting-together
 rm -f /etc/nginx/sites-enabled/default
 install -m 755 "$APP_DIR/update-live.sh" /usr/local/bin/update-live
+install -m 755 "$APP_DIR/reset-parenting-together.sh" /usr/local/bin/reset-parenting-together
 
 systemctl daemon-reload
 systemctl enable --now parenting-together
@@ -61,6 +62,7 @@ if curl -fsS http://127.0.0.1:8765/health >/dev/null; then
   echo "Parenting Together installed successfully."
   echo "Open: http://$(hostname -I | awk '{print $1}')"
   echo "Future updates: update-live"
+  echo "Full data reset: reset-parenting-together"
 else
   echo "The service did not pass its local health check."
   systemctl --no-pager --full status parenting-together || true

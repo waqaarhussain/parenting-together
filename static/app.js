@@ -50,6 +50,9 @@ function initials(name) {
 }
 function money(p) { return "£" + ((Number(p)||0)/100).toFixed(2); }
 function status(s) { return '<span class="status '+esc(s)+'">'+esc(s)+'</span>'; }
+function isFutureEvent(startAt) {
+  return new Date(startAt).getTime() > Date.now();
+}
 
 function applyTheme() {
   document.documentElement.setAttribute("data-theme", state.theme);
@@ -185,19 +188,19 @@ async function getAll() {
 async function renderHome() {
   var d = await getAll();
   var pending = d.handovers.filter(function(x){return x.status==="pending";}).length + d.decisions.filter(function(x){return x.status==="pending";}).length + d.expenses.filter(function(x){return x.status==="pending";}).length;
-  var upcoming = d.events.filter(function(x){return new Date(x.start_at)>=new Date();}).slice(0,5);
+  var upcomingEvents = d.events.filter(function(x){return isFutureEvent(x.start_at);});
+  var upcoming = upcomingEvents.slice(0,5);
   var connected = state.me.members.length > 1;
   document.getElementById("page").innerHTML =
     '<div class="page-grid">'+
-      '<section class="card welcome-card span-8"><p class="eyebrow">YOUR FAMILY SPACE</p><h3>Hi '+esc(state.me.user.name.split(" ")[0])+'.</h3><p>'+ (connected ? 'Everything shared between both parents stays organised, timestamped and easy to find.' : 'You are in solo mode. Start organising now, then connect the other parent whenever you are ready.') +'</p><div class="quick-actions"><button class="quick-action" id="qa-message">New message</button><button class="quick-action" id="qa-event">Add plan</button><button class="quick-action" id="qa-invite">'+(connected?'Family code':'Connect co-parent')+'</button><button class="quick-action" id="qa-child">Add child</button></div></section>'+
+      '<section class="card welcome-card span-8"><p class="eyebrow">YOUR FAMILY SPACE</p><h3>Hi '+esc(state.me.user.name.split(" ")[0])+'.</h3><p>'+ (connected ? 'Everything shared between both parents stays organised, timestamped and easy to find.' : 'You are in solo mode. Start organising now, then connect the other parent whenever you are ready.') +'</p><div class="quick-actions"><button class="quick-action" id="qa-event">Add Event</button><button class="quick-action" id="qa-invite">'+(connected?'Family code':'Connect co-parent')+'</button><button class="quick-action" id="qa-child">Add child</button></div></section>'+
       '<section class="metric-card span-4"><div class="metric-label">Open items</div><div class="metric-value">'+pending+'</div><div class="metric-note">Handovers, decisions and expenses awaiting action.</div></section>'+
       '<section class="metric-card span-4"><div class="metric-label">Children</div><div class="metric-value">'+state.me.children.length+'</div><div class="metric-note">'+(state.me.children.length?state.me.children.map(function(c){return esc(c.name);}).join(" · "):"Add profiles to personalise the family space.")+'</div></section>'+
-      '<section class="metric-card span-4"><div class="metric-label">Upcoming plans</div><div class="metric-value">'+upcoming.length+'</div><div class="metric-note">Visible calendar items coming up.</div></section>'+
+      '<section class="metric-card span-4"><div class="metric-label">Upcoming events</div><div class="metric-value">'+upcomingEvents.length+'</div><div class="metric-note">Calendar events that have not started yet.</div></section>'+
       '<section class="metric-card span-4"><div class="metric-label">Evidence records</div><div class="metric-value">'+d.timeline.length+(d.timeline.length===20?"+":"")+'</div><div class="metric-note">Recent immutable audit events.</div></section>'+
-      '<section class="card span-6"><div class="card-head"><div><h3>Coming up</h3><p>Shared plans in date order.</p></div><button class="tiny-button primary" id="home-add-event">+ Add</button></div>'+listEvents(upcoming)+'</section>'+
+      '<section class="card span-6"><div class="card-head"><div><h3>Upcoming events</h3><p>Shared events that have not started yet.</p></div><button class="tiny-button primary" id="home-add-event">+ Add</button></div>'+listEvents(upcoming)+'</section>'+
       '<section class="card span-6"><div class="card-head"><div><h3>Recent activity</h3><p>A calm timeline of what changed.</p></div><button class="tiny-button" id="home-evidence">View all</button></div>'+timelineHtml(d.timeline.slice(0,6))+'</section>'+
     '</div>';
-  document.getElementById("qa-message").onclick=function(){navigate("messages");};
   document.getElementById("qa-event").onclick=openEventModal;
   document.getElementById("home-add-event").onclick=openEventModal;
   document.getElementById("qa-invite").onclick=openInviteModal;
@@ -257,8 +260,8 @@ async function renderCalendar() {
     var cls="day"+(d.getMonth()!==m?" other":"")+(d.toDateString()===today.toDateString()?" today":"");
     cells+='<div class="'+cls+'"><div class="day-num">'+d.getDate()+'</div>'+ev.slice(0,3).map(function(x){return '<span class="event-chip">'+esc(x.title)+'</span>';}).join("")+'</div>';
   }
-  var upcoming=events.filter(function(x){return new Date(x.start_at)>=new Date();}).slice(0,8);
-  document.getElementById("page").innerHTML='<div class="calendar-wrap"><section class="calendar-card"><div class="calendar-head"><button class="tiny-button" id="cal-prev">‹</button><strong>'+cur.toLocaleDateString([],{month:"long",year:"numeric"})+'</strong><button class="tiny-button" id="cal-next">›</button></div><div class="calendar-grid">'+["Sun","Mon","Tue","Wed","Thu","Fri","Sat"].map(function(x){return '<div class="weekday">'+x+'</div>';}).join("")+cells+'</div></section><section class="card"><div class="card-head"><div><h3>Upcoming</h3><p>School, appointments, clubs and holidays.</p></div><button class="tiny-button primary" id="cal-add">+ Add</button></div>'+listEvents(upcoming)+'</section></div>';
+  var upcoming=events.filter(function(x){return isFutureEvent(x.start_at);}).slice(0,8);
+  document.getElementById("page").innerHTML='<div class="calendar-wrap"><section class="calendar-card"><div class="calendar-head"><button class="tiny-button" id="cal-prev">‹</button><strong>'+cur.toLocaleDateString([],{month:"long",year:"numeric"})+'</strong><button class="tiny-button" id="cal-next">›</button></div><div class="calendar-grid">'+["Sun","Mon","Tue","Wed","Thu","Fri","Sat"].map(function(x){return '<div class="weekday">'+x+'</div>';}).join("")+cells+'</div></section><section class="card"><div class="card-head"><div><h3>Upcoming events</h3><p>School, appointments, clubs and holidays.</p></div><button class="tiny-button primary" id="cal-add">+ Add</button></div>'+listEvents(upcoming)+'</section></div>';
   document.getElementById("cal-prev").onclick=function(){state.calendarCursor=new Date(y,m-1,1);renderCalendar();};
   document.getElementById("cal-next").onclick=function(){state.calendarCursor=new Date(y,m+1,1);renderCalendar();};
   document.getElementById("cal-add").onclick=openEventModal;
@@ -321,7 +324,7 @@ function timelineHtml(items) {
 async function renderEvidence() {
   var items=await api("/api/timeline?limit=500");
   var verify=await api("/api/messages/verify");
-  document.getElementById("page").innerHTML='<div class="page-grid"><section class="card span-4"><div class="card-head"><div><h3>Integrity</h3><p>Current immutable message chain.</p></div></div><div class="metric-value" style="color:var(--success)">'+(verify.verified?"Verified":"Warning")+'</div><div class="metric-note">'+verify.count+' message record'+(verify.count===1?"":"s")+' · head '+esc((verify.head_hash||"").slice(0,12))+'</div><div class="warning-box">Tamper-evident means the app can detect changes to its message chain. It does not mean automatic court admissibility.</div></section><section class="card span-8"><div class="card-head"><div><h3>Export evidence pack</h3><p>Messages and activity in one chronological PDF.</p></div></div><form id="export-form" class="form-stack"><div class="page-grid"><div class="field span-6"><label>From</label><input name="start" type="date"></div><div class="field span-6"><label>To</label><input name="end" type="date"></div></div><button class="primary-button" type="submit">Download PDF evidence pack</button></form></section><section class="card span-12"><div class="card-head"><div><h3>Evidence timeline</h3><p>Actions are automatically timestamped and cannot be edited through the app.</p></div></div>'+timelineHtml(items)+'</section></div>';
+  document.getElementById("page").innerHTML='<div class="page-grid"><section class="card span-4"><div class="card-head"><div><h3>Integrity</h3><p>Current immutable message chain.</p></div></div><div class="metric-value" style="color:var(--success)">'+(verify.verified?"Verified":"Warning")+'</div><div class="metric-note">'+verify.count+' message record'+(verify.count===1?"":"s")+' · head '+esc((verify.head_hash||"").slice(0,12))+'</div><div class="warning-box">Tamper-evident means the app can detect changes to its message chain. It does not mean automatic court admissibility.</div></section><section class="card span-8"><div class="card-head"><div><h3>Export evidence pack</h3><p>Messages and activity in one chronological PDF.</p></div></div><form id="export-form" class="form-stack"><div class="export-dates"><div class="field"><label>From</label><input name="start" type="date"></div><div class="field"><label>To</label><input name="end" type="date"></div></div><button class="primary-button" type="submit">Download PDF evidence pack</button></form></section><section class="card span-12"><div class="card-head"><div><h3>Evidence timeline</h3><p>Actions are automatically timestamped and cannot be edited through the app.</p></div></div>'+timelineHtml(items)+'</section></div>';
   document.getElementById("export-form").onsubmit=function(e){e.preventDefault();var fd=new FormData(e.target),q=new URLSearchParams();if(fd.get("start"))q.set("start",fd.get("start"));if(fd.get("end"))q.set("end",fd.get("end"));window.location="/api/evidence.pdf?"+q.toString();};
 }
 
@@ -332,7 +335,7 @@ async function renderRules() {
 }
 
 function renderSearch() {
-  document.getElementById("page").innerHTML='<div class="search-box"><input id="global-search" class="search-input" autocomplete="off" placeholder="Search messages, appointments, receipts, decisions, handovers, rules…"><div id="search-results" class="search-results"><div class="empty"><strong>One search for everything</strong>Unlike separate feature searches, this looks across the whole family record.</div></div></div>';
+  document.getElementById("page").innerHTML='<div class="search-box"><input id="global-search" class="search-input" autocomplete="off" placeholder="Search words, names, dates, amounts, receipt filenames…"><div id="search-results" class="search-results"><div class="empty"><strong>Search the family record</strong>Messages, events, child profiles, handovers, decisions, expenses, rules and activity.</div></div></div>';
   var input=document.getElementById("global-search"),timer;
   input.focus();
   input.oninput=function(){clearTimeout(timer);timer=setTimeout(async function(){var q=input.value.trim();if(q.length<2){document.getElementById("search-results").innerHTML='<div class="empty"><strong>Keep typing</strong>Enter at least two characters.</div>';return;}try{var items=await api("/api/search?q="+encodeURIComponent(q));document.getElementById("search-results").innerHTML=items.length?'<div class="list">'+items.map(function(x){return '<div class="list-item"><div class="list-main"><div class="search-type">'+esc(x.type)+'</div><div class="list-title">'+esc(x.title)+'</div><div class="list-sub">'+esc(x.detail||"")+' · '+fmt(x.created_at)+'</div></div></div>';}).join("")+'</div>':'<div class="empty"><strong>No matches</strong>Nothing in the family record matched that search.</div>';}catch(e){toast(e.message,"error");}},260);};
