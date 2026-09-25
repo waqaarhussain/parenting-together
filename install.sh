@@ -17,8 +17,8 @@ apt-get install -y git nginx python3 python3-venv python3-pip ca-certificates cu
 
 if [ -d "$APP_DIR/.git" ]; then
   cd "$APP_DIR"
-  git fetch origin main
-  git reset --hard origin/main
+  git -c safe.directory="$APP_DIR" fetch origin main
+  git -c safe.directory="$APP_DIR" reset --hard origin/main
 else
   rm -rf "$APP_DIR"
   git clone --depth 1 "$REPO" "$APP_DIR"
@@ -41,7 +41,8 @@ ENV
   chown root:www-data "$ENV_FILE"
 fi
 
-chown -R www-data:www-data "$APP_DIR" "$DATA_DIR"
+chown -R root:root "$APP_DIR"
+chown -R www-data:www-data "$DATA_DIR"
 install -m 644 "$APP_DIR/deploy/parenting-together.service" /etc/systemd/system/parenting-together.service
 install -m 644 "$APP_DIR/deploy/nginx.conf" /etc/nginx/sites-available/parenting-together
 ln -sfn /etc/nginx/sites-available/parenting-together /etc/nginx/sites-enabled/parenting-together
