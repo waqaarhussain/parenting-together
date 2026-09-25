@@ -7,7 +7,7 @@ A mobile-first co-parenting PWA focused on calm communication, verifiable record
 - Secure account registration and login
 - Family invite codes and solo mode
 - Multiple child profiles
-- Immutable message records with a SHA-256 hash chain
+- Saved messages with a SHA-256 hash chain to detect changes
 - Delivered/read timestamps
 - Shared calendar with rule warnings
 - Structured handover requests and completion records

@@ -20,3 +20,12 @@ body,button,input,select,textarea,.invite-code,.message-hash{font-family:Inter,u
 .export-dates{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;min-width:0}
 .export-dates .field,.export-dates input{min-width:0;max-width:100%}
 @media(max-width:760px){.export-dates{grid-template-columns:minmax(0,1fr)}}
+
+.nav-button .unread-badge{margin-left:auto}
+.unread-badge{display:inline-flex;align-items:center;justify-content:center;min-width:19px;height:19px;padding:0 5px;border-radius:999px;background:var(--danger);color:#fff;font-size:10px;font-weight:800;line-height:1}
+.typing-indicator{display:block;margin-top:5px;color:var(--primary)!important;font-weight:700}
+#history-trigger{text-align:center}
+#load-older{margin:0 auto 6px}
+.chat-header>div{min-width:0}
+.chat-header .integrity{flex:none;margin-left:10px}
+@media(max-width:760px){.mobile-nav button{position:relative}.mobile-nav .unread-badge{position:absolute;top:-3px;left:calc(50% + 5px);border:2px solid var(--panel);min-width:21px;height:21px;font-size:9px}.chat-header{gap:8px}.chat-header .integrity{font-size:10px}.chat-header .integrity-dot{flex:none}}

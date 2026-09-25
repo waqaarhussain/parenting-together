@@ -1,6 +1,7 @@
 import io
 import os
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -103,6 +104,40 @@ class TwoParentFlow(unittest.TestCase):
         self.assertEqual(response.status_code, 409)
         self.assertEqual(self.second.get("/api/me").json["family"]["id"], b["family"]["id"])
         self.assertEqual(self.second.get("/api/me").json["children"][0]["name"], "Alex")
+
+    def test_live_status_and_unlimited_history(self):
+        a = self.register(self.first, "Parent One", "one@example.test")
+        b = self.register(self.second, "Parent Two", "two@example.test")
+        self.assertEqual(self.post(self.second, b["csrf"], "/api/family/join", {"invite_code": a["family"]["invite_code"]}).status_code, 200)
+        for number in range(123):
+            response = self.post(self.first, a["csrf"], "/api/messages", {"body": f"Message {number}"})
+            self.assertEqual(response.status_code, 201)
+        self.assertEqual(self.second.get("/api/messages/status").json["unread"], 123)
+
+        latest = self.second.get("/api/messages").json
+        self.assertEqual(len(latest), 50)
+        self.assertEqual(latest[0]["body"], "Message 73")
+        self.assertEqual(latest[-1]["body"], "Message 122")
+        self.assertEqual(self.second.get("/api/messages/status").json["unread"], 73)
+        self.assertTrue(self.first.get("/api/messages/status").json["reads"])
+
+        middle = self.second.get(f"/api/messages?before={latest[0]['id']}").json
+        self.assertEqual(len(middle), 50)
+        self.assertEqual(middle[0]["body"], "Message 23")
+        earliest = self.second.get(f"/api/messages?before={middle[0]['id']}").json
+        self.assertEqual(len(earliest), 23)
+        self.assertEqual(earliest[0]["body"], "Message 0")
+        self.assertEqual(self.second.get("/api/messages/status").json["unread"], 0)
+        self.assertEqual(self.second.get(f"/api/messages?after={latest[-1]['id']}").json, [])
+
+        self.assertEqual(self.post(self.first, a["csrf"], "/api/messages/typing", {"typing": True}).status_code, 200)
+        self.assertEqual(self.second.get("/api/messages/status").json["typing_name"], "Parent One")
+        with db() as conn:
+            conn.execute("UPDATE typing_status SET expires_at=?", (int(time.time()) - 1,))
+        self.assertIsNone(self.second.get("/api/messages/status").json["typing_name"])
+        self.assertEqual(self.post(self.first, a["csrf"], "/api/messages/typing", {"typing": True}).status_code, 200)
+        self.assertEqual(self.post(self.first, a["csrf"], "/api/messages/typing", {"typing": False}).status_code, 200)
+        self.assertIsNone(self.second.get("/api/messages/status").json["typing_name"])
 
 
 if __name__ == "__main__":

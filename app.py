@@ -5,6 +5,7 @@ import json
 import os
 import secrets
 import sqlite3
+import time
 from datetime import datetime, timezone
 from functools import wraps
 from pathlib import Path
@@ -97,6 +98,16 @@ def init_db():
         FOREIGN KEY(message_id) REFERENCES messages(id) ON DELETE CASCADE,
         FOREIGN KEY(user_id) REFERENCES users(id)
     );
+    CREATE TABLE IF NOT EXISTS typing_status (
+        family_id INTEGER NOT NULL,
+        user_id INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL,
+        PRIMARY KEY(family_id, user_id),
+        FOREIGN KEY(family_id) REFERENCES families(id) ON DELETE CASCADE,
+        FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS messages_family_id_idx ON messages(family_id, id);
+    CREATE INDEX IF NOT EXISTS message_reads_user_idx ON message_reads(user_id, message_id);
     CREATE TABLE IF NOT EXISTS events (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         family_id INTEGER NOT NULL,
@@ -426,15 +437,31 @@ def add_child():
 def list_messages():
     fid = require_family()
     uid = session["user_id"]
+    try:
+        before = int(request.args["before"]) if "before" in request.args else None
+        after = int(request.args["after"]) if "after" in request.args else None
+    except ValueError:
+        return jsonify({"error": "Invalid message cursor."}), 400
+    if (before is not None and before <= 0) or (after is not None and after < 0) or (before is not None and after is not None):
+        return jsonify({"error": "Invalid message cursor."}), 400
+    where = "m.family_id=?"
+    params = [fid]
+    if before is not None:
+        where += " AND m.id<?"
+        params.append(before)
+    if after is not None:
+        where += " AND m.id>?"
+        params.append(after)
+    order = "ASC" if after is not None else "DESC"
     with db() as conn:
         rows = conn.execute(
-            """
+            f"""
             SELECT m.*,u.name sender_name,
                    (SELECT MIN(read_at) FROM message_reads mr WHERE mr.message_id=m.id AND mr.user_id<>m.sender_id) read_at
             FROM messages m JOIN users u ON u.id=m.sender_id
-            WHERE m.family_id=? ORDER BY m.id ASC LIMIT 500
+            WHERE {where} ORDER BY m.id {order} LIMIT 50
             """,
-            (fid,),
+            params,
         ).fetchall()
         unread = [r["id"] for r in rows if r["sender_id"] != uid]
         if unread:
@@ -443,7 +470,55 @@ def list_messages():
                 "INSERT OR IGNORE INTO message_reads(message_id,user_id,read_at) VALUES(?,?,?)",
                 [(mid, uid, stamp) for mid in unread],
             )
+    if after is None:
+        rows = list(reversed(rows))
     return jsonify([rowdict(x) for x in rows])
+
+
+@app.get("/api/messages/status")
+@login_required
+def message_status():
+    fid = require_family()
+    uid = session["user_id"]
+    with db() as conn:
+        unread = conn.execute(
+            """SELECT COUNT(*) FROM messages m WHERE m.family_id=? AND m.sender_id<>?
+               AND NOT EXISTS (SELECT 1 FROM message_reads mr WHERE mr.message_id=m.id AND mr.user_id=?)""",
+            (fid, uid, uid),
+        ).fetchone()[0]
+        typing = conn.execute(
+            """SELECT u.name FROM typing_status t JOIN users u ON u.id=t.user_id
+               WHERE t.family_id=? AND t.user_id<>? AND t.expires_at>? LIMIT 1""",
+            (fid, uid, int(time.time())),
+        ).fetchone()
+        reads = conn.execute(
+            """SELECT m.id,mr.read_at FROM messages m JOIN message_reads mr ON mr.message_id=m.id
+               WHERE m.family_id=? AND m.sender_id=? AND mr.user_id<>? ORDER BY m.id DESC LIMIT 100""",
+            (fid, uid, uid),
+        ).fetchall()
+    return jsonify({"unread": unread, "typing_name": typing["name"] if typing else None,
+                    "reads": {str(row["id"]): row["read_at"] for row in reads}})
+
+
+@app.post("/api/messages/typing")
+@login_required
+@require_csrf
+def set_typing():
+    data = request.get_json(silent=True) or {}
+    if not isinstance(data.get("typing"), bool):
+        return jsonify({"error": "Invalid typing status."}), 400
+    fid = require_family()
+    uid = session["user_id"]
+    with db() as conn:
+        if data["typing"]:
+            conn.execute(
+                """INSERT INTO typing_status(family_id,user_id,expires_at) VALUES(?,?,?)
+                   ON CONFLICT(family_id,user_id) DO UPDATE SET expires_at=excluded.expires_at""",
+                (fid, uid, int(time.time()) + 6),
+            )
+        else:
+            conn.execute("DELETE FROM typing_status WHERE family_id=? AND user_id=?", (fid, uid))
+    return jsonify({"ok": True})
 
 
 @app.post("/api/messages")
@@ -458,6 +533,8 @@ def send_message():
     uid = session["user_id"]
     created = now_iso()
     with db() as conn:
+        # Serialize the chain head read with writes from the other parent.
+        conn.execute("BEGIN IMMEDIATE")
         prev = conn.execute(
             "SELECT record_hash FROM messages WHERE family_id=? ORDER BY id DESC LIMIT 1", (fid,)
         ).fetchone()
@@ -468,7 +545,7 @@ def send_message():
             "INSERT INTO messages(family_id,sender_id,body,prev_hash,record_hash,created_at) VALUES(?,?,?,?,?,?)",
             (fid, uid, body, prev_hash, record_hash, created),
         )
-        audit_event(conn, fid, uid, "sent", "message", cur.lastrowid, "Sent immutable message", {"hash": record_hash})
+        audit_event(conn, fid, uid, "sent", "message", cur.lastrowid, "Sent message", {"hash": record_hash})
     return jsonify({"ok": True, "id": cur.lastrowid, "hash": record_hash}), 201
 
 
@@ -915,13 +992,13 @@ def evidence_pdf():
         Paragraph("Children: " + (html.escape(", ".join([c["name"] for c in children])) or "None recorded"), styles["BodyText"]),
         Spacer(1, 5*mm),
         Paragraph("Record integrity", styles["Heading2"]),
-        Paragraph("Messages are stored as immutable database records and linked by a SHA-256 hash chain. This export is a tamper-evident record, not a claim of automatic court admissibility.", styles["BodyText"]),
+        Paragraph("Sent messages cannot be edited or deleted through the app. A SHA-256 hash chain helps detect changes to saved messages. This export does not mean automatic court admissibility.", styles["BodyText"]),
         Spacer(1, 5*mm),
         Paragraph("Chronological activity", styles["Heading2"]),
     ]
     data = [["Time", "Actor", "Type", "Record"]]
     for a in audits:
-        data.append([a["created_at"][:19].replace("T", " "), a["actor_name"] or "System", a["entity_type"], a["summary"]])
+        data.append([a["created_at"][:19].replace("T", " "), a["actor_name"] or "System", a["entity_type"], a["summary"].replace("immutable", "saved")])
     table = Table(data, colWidths=[38*mm, 32*mm, 24*mm, 82*mm], repeatRows=1)
     table.setStyle(TableStyle([
         ("BACKGROUND", (0,0), (-1,0), colors.HexColor("#111827")),
