@@ -50,10 +50,8 @@ function initials(name) {
 }
 function money(p) { return "£" + ((Number(p)||0)/100).toFixed(2); }
 function status(s) { return '<span class="status '+esc(s)+'">'+esc(s)+'</span>'; }
-function isTodayOrLater(startAt) {
-  var today = new Date();
-  today.setHours(0, 0, 0, 0);
-  return new Date(startAt) >= today;
+function isFutureEvent(startAt) {
+  return new Date(startAt).getTime() > Date.now();
 }
 
 function applyTheme() {
@@ -190,7 +188,7 @@ async function getAll() {
 async function renderHome() {
   var d = await getAll();
   var pending = d.handovers.filter(function(x){return x.status==="pending";}).length + d.decisions.filter(function(x){return x.status==="pending";}).length + d.expenses.filter(function(x){return x.status==="pending";}).length;
-  var upcomingEvents = d.events.filter(function(x){return isTodayOrLater(x.start_at);});
+  var upcomingEvents = d.events.filter(function(x){return isFutureEvent(x.start_at);});
   var upcoming = upcomingEvents.slice(0,5);
   var connected = state.me.members.length > 1;
   document.getElementById("page").innerHTML =
@@ -198,9 +196,9 @@ async function renderHome() {
       '<section class="card welcome-card span-8"><p class="eyebrow">YOUR FAMILY SPACE</p><h3>Hi '+esc(state.me.user.name.split(" ")[0])+'.</h3><p>'+ (connected ? 'Everything shared between both parents stays organised, timestamped and easy to find.' : 'You are in solo mode. Start organising now, then connect the other parent whenever you are ready.') +'</p><div class="quick-actions"><button class="quick-action" id="qa-event">Add Event</button><button class="quick-action" id="qa-invite">'+(connected?'Family code':'Connect co-parent')+'</button><button class="quick-action" id="qa-child">Add child</button></div></section>'+
       '<section class="metric-card span-4"><div class="metric-label">Open items</div><div class="metric-value">'+pending+'</div><div class="metric-note">Handovers, decisions and expenses awaiting action.</div></section>'+
       '<section class="metric-card span-4"><div class="metric-label">Children</div><div class="metric-value">'+state.me.children.length+'</div><div class="metric-note">'+(state.me.children.length?state.me.children.map(function(c){return esc(c.name);}).join(" · "):"Add profiles to personalise the family space.")+'</div></section>'+
-      '<section class="metric-card span-4"><div class="metric-label">Today & upcoming</div><div class="metric-value">'+upcomingEvents.length+'</div><div class="metric-note">Visible calendar items from today onward.</div></section>'+
+      '<section class="metric-card span-4"><div class="metric-label">Upcoming events</div><div class="metric-value">'+upcomingEvents.length+'</div><div class="metric-note">Calendar events that have not started yet.</div></section>'+
       '<section class="metric-card span-4"><div class="metric-label">Evidence records</div><div class="metric-value">'+d.timeline.length+(d.timeline.length===20?"+":"")+'</div><div class="metric-note">Recent immutable audit events.</div></section>'+
-      '<section class="card span-6"><div class="card-head"><div><h3>Today & upcoming</h3><p>Shared events in date order.</p></div><button class="tiny-button primary" id="home-add-event">+ Add</button></div>'+listEvents(upcoming)+'</section>'+
+      '<section class="card span-6"><div class="card-head"><div><h3>Upcoming events</h3><p>Shared events that have not started yet.</p></div><button class="tiny-button primary" id="home-add-event">+ Add</button></div>'+listEvents(upcoming)+'</section>'+
       '<section class="card span-6"><div class="card-head"><div><h3>Recent activity</h3><p>A calm timeline of what changed.</p></div><button class="tiny-button" id="home-evidence">View all</button></div>'+timelineHtml(d.timeline.slice(0,6))+'</section>'+
     '</div>';
   document.getElementById("qa-event").onclick=openEventModal;
@@ -262,8 +260,8 @@ async function renderCalendar() {
     var cls="day"+(d.getMonth()!==m?" other":"")+(d.toDateString()===today.toDateString()?" today":"");
     cells+='<div class="'+cls+'"><div class="day-num">'+d.getDate()+'</div>'+ev.slice(0,3).map(function(x){return '<span class="event-chip">'+esc(x.title)+'</span>';}).join("")+'</div>';
   }
-  var upcoming=events.filter(function(x){return isTodayOrLater(x.start_at);}).slice(0,8);
-  document.getElementById("page").innerHTML='<div class="calendar-wrap"><section class="calendar-card"><div class="calendar-head"><button class="tiny-button" id="cal-prev">‹</button><strong>'+cur.toLocaleDateString([],{month:"long",year:"numeric"})+'</strong><button class="tiny-button" id="cal-next">›</button></div><div class="calendar-grid">'+["Sun","Mon","Tue","Wed","Thu","Fri","Sat"].map(function(x){return '<div class="weekday">'+x+'</div>';}).join("")+cells+'</div></section><section class="card"><div class="card-head"><div><h3>Today & upcoming</h3><p>School, appointments, clubs and holidays.</p></div><button class="tiny-button primary" id="cal-add">+ Add</button></div>'+listEvents(upcoming)+'</section></div>';
+  var upcoming=events.filter(function(x){return isFutureEvent(x.start_at);}).slice(0,8);
+  document.getElementById("page").innerHTML='<div class="calendar-wrap"><section class="calendar-card"><div class="calendar-head"><button class="tiny-button" id="cal-prev">‹</button><strong>'+cur.toLocaleDateString([],{month:"long",year:"numeric"})+'</strong><button class="tiny-button" id="cal-next">›</button></div><div class="calendar-grid">'+["Sun","Mon","Tue","Wed","Thu","Fri","Sat"].map(function(x){return '<div class="weekday">'+x+'</div>';}).join("")+cells+'</div></section><section class="card"><div class="card-head"><div><h3>Upcoming events</h3><p>School, appointments, clubs and holidays.</p></div><button class="tiny-button primary" id="cal-add">+ Add</button></div>'+listEvents(upcoming)+'</section></div>';
   document.getElementById("cal-prev").onclick=function(){state.calendarCursor=new Date(y,m-1,1);renderCalendar();};
   document.getElementById("cal-next").onclick=function(){state.calendarCursor=new Date(y,m+1,1);renderCalendar();};
   document.getElementById("cal-add").onclick=openEventModal;
