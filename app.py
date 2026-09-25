@@ -1,4 +1,5 @@
 import hashlib
+import html
 import io
 import json
 import os
@@ -380,6 +381,8 @@ def join_family():
             return jsonify({"error": "Invite code not found."}), 404
         if conn.execute("SELECT 1 FROM family_members WHERE family_id=? AND user_id=?", (target["id"], uid)).fetchone():
             return jsonify(me_payload(uid))
+        if conn.execute("SELECT COUNT(*) c FROM family_members WHERE family_id=?", (target["id"],)).fetchone()["c"] >= 2:
+            return jsonify({"error": "This family space already has two parents."}), 409
         current = family_id_for(uid)
         if current:
             member_count = conn.execute("SELECT COUNT(*) c FROM family_members WHERE family_id=?", (current,)).fetchone()["c"]
@@ -387,10 +390,10 @@ def join_family():
             for table in ("messages", "events", "handovers", "decisions", "expenses", "children", "rules"):
                 activity_count += conn.execute("SELECT COUNT(*) c FROM " + table + " WHERE family_id=?", (current,)).fetchone()["c"]
             if member_count == 1 and activity_count == 0:
+                audit_event(conn, current, uid, "left", "family", current, "Left empty starter family space")
                 conn.execute("DELETE FROM family_members WHERE family_id=? AND user_id=?", (current, uid))
-                conn.execute("DELETE FROM families WHERE id=?", (current,))
             else:
-                return jsonify({"error": "This account is already attached to an active family space."}), 409
+                return jsonify({"error": "This account has records in its own family space. Joining would leave those records behind, so it was blocked."}), 409
         conn.execute(
             "INSERT INTO family_members(family_id,user_id,role,joined_at) VALUES(?,?,?,?)",
             (target["id"], uid, "parent", now_iso()),
@@ -840,10 +843,15 @@ def evidence_pdf():
             params.append(end + "T23:59:59")
         sql += " ORDER BY a.id ASC"
         audits = conn.execute(sql, params).fetchall()
-        messages = conn.execute(
-            "SELECT m.*,u.name sender_name FROM messages m JOIN users u ON u.id=m.sender_id WHERE m.family_id=? ORDER BY m.id",
-            (fid,),
-        ).fetchall()
+        message_sql = "SELECT m.*,u.name sender_name FROM messages m JOIN users u ON u.id=m.sender_id WHERE m.family_id=?"
+        message_params = [fid]
+        if start:
+            message_sql += " AND m.created_at>=?"
+            message_params.append(start)
+        if end:
+            message_sql += " AND m.created_at<=?"
+            message_params.append(end + "T23:59:59")
+        messages = conn.execute(message_sql + " ORDER BY m.id", message_params).fetchall()
 
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=16*mm, leftMargin=16*mm, topMargin=16*mm, bottomMargin=16*mm)
@@ -854,9 +862,9 @@ def evidence_pdf():
         Paragraph("Generated " + now_iso(), styles["SmallMuted"]),
         Spacer(1, 6*mm),
         Paragraph("Family", styles["Heading2"]),
-        Paragraph(family["name"], styles["BodyText"]),
-        Paragraph("Parents: " + ", ".join([m["name"] + " <" + m["email"] + ">" for m in members]), styles["BodyText"]),
-        Paragraph("Children: " + (", ".join([c["name"] for c in children]) or "None recorded"), styles["BodyText"]),
+        Paragraph(html.escape(family["name"]), styles["BodyText"]),
+        Paragraph("Parents: " + ", ".join([html.escape(m["name"] + " <" + m["email"] + ">") for m in members]), styles["BodyText"]),
+        Paragraph("Children: " + (html.escape(", ".join([c["name"] for c in children])) or "None recorded"), styles["BodyText"]),
         Spacer(1, 5*mm),
         Paragraph("Record integrity", styles["Heading2"]),
         Paragraph("Messages are stored as immutable database records and linked by a SHA-256 hash chain. This export is a tamper-evident record, not a claim of automatic court admissibility.", styles["BodyText"]),
@@ -882,8 +890,8 @@ def evidence_pdf():
     ]))
     story.extend([table, PageBreak(), Paragraph("Message record", styles["Heading2"])])
     for m in messages:
-        story.append(Paragraph(m["sender_name"] + " · " + m["created_at"][:19].replace("T", " "), styles["SmallMuted"]))
-        story.append(Paragraph(m["body"].replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"), styles["BodyText"]))
+        story.append(Paragraph(html.escape(m["sender_name"] + " · " + m["created_at"][:19].replace("T", " ")), styles["SmallMuted"]))
+        story.append(Paragraph(html.escape(m["body"]), styles["BodyText"]))
         story.append(Paragraph("Hash: " + m["record_hash"], styles["SmallMuted"]))
         story.append(Spacer(1, 4*mm))
     doc.build(story)

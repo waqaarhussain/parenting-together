@@ -19,3 +19,7 @@ jobs:
         run: node --check static/app.js
       - name: Shell syntax
         run: bash -n install.sh update-live.sh
+      - name: Install application dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Two-parent feature flows
+        run: python -m unittest discover -s tests -v
