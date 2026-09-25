@@ -235,7 +235,7 @@ async function renderMessages() {
     '<div class="chat-shell"><div class="chat-header"><div><strong>Family messages</strong><br><span>Sent records cannot be edited or deleted.</span></div><span class="integrity"><i class="integrity-dot"></i>'+(verify.verified?"Chain verified":"Integrity warning")+'</span></div>'+
     '<div id="messages" class="messages">'+(messages.length?messages.map(function(m){
       var mine=m.sender_id===uid;
-      return '<div class="message-row '+(mine?"mine":"")+'"><div class="bubble-wrap">'+(!mine?'<div class="message-sender">'+esc(m.sender_name)+'</div>':'')+'<div class="bubble">'+esc(m.body)+'</div><div class="message-meta">'+fmt(m.created_at)+(mine?(m.read_at?' · Read '+fmt(m.read_at):' · Delivered'):'')+' · <span class="message-hash">#'+esc(m.record_hash.slice(0,8))+'</span></div></div></div>';
+      return '<div class="message-row '+(mine?"mine":"")+'"><div class="bubble-wrap">'+(!mine?'<div class="message-sender">'+esc(m.sender_name)+'</div>':'')+'<div class="bubble">'+esc(m.body)+'</div><div class="message-meta">'+fmt(m.created_at)+(mine?(m.read_at?' · Read '+fmt(m.read_at):' · Recorded'):'')+' · <span class="message-hash">#'+esc(m.record_hash.slice(0,8))+'</span></div></div></div>';
     }).join(""):'<div class="empty"><strong>No messages yet</strong>Start the conversation. Once sent, a message becomes part of the permanent record.</div>')+'</div>'+
     '<form id="message-form" class="chat-compose"><textarea name="body" maxlength="5000" placeholder="Write a message…" required></textarea><button class="send-button" aria-label="Send">'+icons.send+'</button></form></div>';
   var box=document.getElementById("messages"); box.scrollTop=box.scrollHeight;
