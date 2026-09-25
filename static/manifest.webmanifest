@@ -1,0 +1,12 @@
+{
+  "name": "Parenting Together",
+  "short_name": "Together",
+  "description": "Calm co-parenting communication, plans and evidence.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0b1020",
+  "theme_color": "#111827",
+  "icons": [
+    {"src": "/static/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable"}
+  ]
+}
