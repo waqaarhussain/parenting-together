@@ -241,6 +241,16 @@ def init_db():
         UNIQUE(user_id, dedupe_key)
     );
     CREATE INDEX IF NOT EXISTS notifications_user_idx ON notifications(user_id, read_at, id);
+    CREATE TABLE IF NOT EXISTS feature_requests (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        family_id INTEGER NOT NULL,
+        user_id INTEGER NOT NULL,
+        body TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY(family_id) REFERENCES families(id) ON DELETE CASCADE,
+        FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS feature_requests_created_idx ON feature_requests(created_at, id);
     CREATE TRIGGER IF NOT EXISTS messages_no_update
     BEFORE UPDATE ON messages
     BEGIN
@@ -626,6 +636,24 @@ def join_family():
         notify_family(conn, target["id"], uid, "family_joined", "Co-parent connected",
                       joining_user["name"] + " joined your family space", "home", target["id"])
     return jsonify(me_payload(uid))
+
+
+@app.post("/api/feature-requests")
+@login_required
+@require_csrf
+def create_feature_request():
+    data = request.get_json(silent=True) or {}
+    body = str(data.get("body", "")).strip()
+    if not body:
+        return jsonify({"error": "Type your feature request first."}), 400
+    if len(body) > 100:
+        return jsonify({"error": "Feature requests are limited to 100 characters."}), 400
+    with db() as conn:
+        cur = conn.execute(
+            "INSERT INTO feature_requests(family_id,user_id,body,created_at) VALUES(?,?,?,?)",
+            (require_family(), session["user_id"], body, now_iso()),
+        )
+    return jsonify({"ok": True, "id": cur.lastrowid}), 201
 
 
 @app.post("/api/children")
