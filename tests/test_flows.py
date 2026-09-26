@@ -35,6 +35,16 @@ class TwoParentFlow(unittest.TestCase):
     def post(self, client, csrf, path, json=None, data=None):
         return client.post(path, json=json, data=data, headers={"X-CSRF-Token": csrf})
 
+    def test_deploy_version_refreshes_assets_without_clearing_login(self):
+        page = self.first.get("/")
+        self.assertEqual(page.status_code, 200)
+        self.assertIn("no-store", page.headers["Cache-Control"])
+        version = self.first.get("/api/version")
+        self.assertEqual(version.status_code, 200)
+        self.assertIn("no-store", version.headers["Cache-Control"])
+        self.assertIn(f'/static/app.css?v={version.json["version"]}', page.get_data(as_text=True))
+        self.assertIn(f'/static/app.js?v={version.json["version"]}', page.get_data(as_text=True))
+
     def test_join_and_shared_features(self):
         a = self.register(self.first, "Parent One", "one@example.test")
         b = self.register(self.second, "Parent Two", "two@example.test")
