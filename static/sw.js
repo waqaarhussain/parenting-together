@@ -1,5 +1,7 @@
-const CACHE = "parenting-together-v3";
-const STATIC = ["/", "/static/app.css", "/static/app.js", "/static/icon.svg", "/static/manifest.webmanifest"];
+const VERSION = new URL(self.location.href).searchParams.get("v") || "dev";
+const VERSION_QUERY = "?v=" + encodeURIComponent(VERSION);
+const CACHE = "parenting-together-" + VERSION;
+const STATIC = ["/" + VERSION_QUERY, "/static/app.css" + VERSION_QUERY, "/static/app.js" + VERSION_QUERY, "/static/icon.svg", "/static/manifest.webmanifest"];
 self.addEventListener("install", function(event) {
   event.waitUntil(caches.open(CACHE).then(function(cache) { return cache.addAll(STATIC); }));
   self.skipWaiting();
