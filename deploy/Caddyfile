@@ -1,0 +1,16 @@
+(parenting_proxy) {
+    encode zstd gzip
+    reverse_proxy 127.0.0.1:8765
+
+    @serviceWorker path /static/sw.js
+    header @serviceWorker Cache-Control "no-cache, no-store, must-revalidate"
+}
+
+{$PARENTING_DOMAIN:v2202603253680444276.megasrv.de} {
+    import parenting_proxy
+    header Strict-Transport-Security "max-age=31536000"
+}
+
+:80 {
+    import parenting_proxy
+}
