@@ -418,10 +418,11 @@ async function renderHome() {
   var connected = state.me.members.length > 1;
   document.getElementById("page").innerHTML =
     '<div class="page-grid">'+
-      '<section class="card welcome-card span-8"><p class="eyebrow">YOUR FAMILY SPACE</p><h3>Hi '+esc(state.me.user.name.split(" ")[0])+'.</h3><p>'+ (connected ? 'Everything shared between both parents stays organised, timestamped and easy to find.' : 'You are in solo mode. Start organising now, then connect the other parent whenever you are ready.') +'</p><div class="quick-actions"><button class="quick-action" id="qa-invite">'+(connected?'Parents connected':'Connect co-parent')+'</button><button class="quick-action" id="qa-child">Add child</button></div></section>'+
-      '<section class="metric-card span-4"><div class="metric-label">Open items</div><div class="metric-value">'+pending+'</div><div class="metric-note">Handovers, decisions and expenses awaiting action.</div></section>'+
-      '<section class="metric-card span-6"><div class="metric-label">Children</div><div class="metric-value">'+state.me.children.length+'</div><div class="metric-note">'+(state.me.children.length?state.me.children.map(function(c){return esc(c.name);}).join(" · "):"Add profiles to personalise the family space.")+'</div></section>'+
-      '<section class="metric-card span-6"><div class="metric-label">Upcoming plans</div><div class="metric-value">'+upcoming.length+(d.events.filter(function(x){return isFutureEvent(x.start_at);}).length>8?"+":"")+'</div><div class="metric-note">Events that have not started yet.</div></section>'+
+      '<section class="card welcome-card span-12"><p class="eyebrow">YOUR FAMILY SPACE</p><h3>Hi '+esc(state.me.user.name.split(" ")[0])+'.</h3><p>'+ (connected ? 'Everything shared between both parents stays organised, timestamped and easy to find.' : 'You are in solo mode. Start organising now, then connect the other parent whenever you are ready.') +'</p><div class="quick-actions"><button class="quick-action" id="qa-invite">'+(connected?'Parents connected':'Connect co-parent')+'</button><button class="quick-action" id="qa-child">Add child</button></div></section>'+
+      '<div class="home-summary-grid">'+
+        '<section class="metric-card"><div class="metric-label">Open items</div><div class="metric-value">'+pending+'</div><div class="metric-note">Handovers, decisions and expenses awaiting action.</div></section>'+
+        '<section class="metric-card"><div class="metric-label">Rules</div><div class="metric-value">'+d.rules.length+'</div><div class="metric-note">Saved agreement rules visible to both parents.</div></section>'+
+      '</div>'+
       '<section class="card span-12"><div class="card-head"><div><h3>Upcoming events</h3><p>Your next shared plans.</p></div><button class="tiny-button" id="home-calendar">View calendar</button></div>'+listEvents(upcoming)+'</section>'+
     '</div>';
   document.getElementById("qa-invite").onclick=openInviteModal;
