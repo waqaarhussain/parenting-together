@@ -72,7 +72,7 @@ class TwoParentFlow(unittest.TestCase):
         with db() as conn:
             self.assertEqual(conn.execute("SELECT body FROM messages WHERE id=?", (legacy.json["id"],)).fetchone()["body"], encrypted)
 
-    def test_encrypted_family_requires_full_secure_invite(self):
+    def test_encrypted_family_uses_single_use_secure_invite(self):
         envelope = {"v": 1, "salt": "salt", "iv": "iv", "data": "wrapped"}
         first = self.first.post("/api/auth/register", json={
             "name": "Parent One", "username": "parent.one", "password": "sample-password-123",
@@ -80,13 +80,25 @@ class TwoParentFlow(unittest.TestCase):
         }).json
         second = self.register(self.second, "Parent Two", "two@example.test")
         code = first["family"]["invite_code"]
-        blocked = self.post(self.second, second["csrf"], "/api/family/join", {"invite_code": code})
-        self.assertEqual(blocked.status_code, 400)
-        joined = self.post(self.second, second["csrf"], "/api/family/join", {
+        blocked = self.post(self.second, second["csrf"], "/api/family/join", {
             "invite_code": code, "envelope": envelope,
+        })
+        self.assertEqual(blocked.status_code, 400)
+        lookup = "A" * 43
+        payload = {"v": 1, "iv": "encrypted-iv", "data": "encrypted-family-key"}
+        invited = self.post(self.first, first["csrf"], "/api/family/invite", {
+            "lookup": lookup, "payload": payload,
+        })
+        self.assertEqual(invited.status_code, 201, invited.get_data(as_text=True))
+        resolved = self.post(self.second, second["csrf"], "/api/family/invite/resolve", {"lookup": lookup})
+        self.assertEqual(resolved.status_code, 200, resolved.get_data(as_text=True))
+        self.assertEqual(resolved.json["payload"], payload)
+        joined = self.post(self.second, second["csrf"], "/api/family/join", {
+            "invite_lookup": lookup, "envelope": envelope,
         })
         self.assertEqual(joined.status_code, 200, joined.get_data(as_text=True))
         self.assertEqual(joined.json["vault_envelope"], envelope)
+        self.assertEqual(self.post(self.second, second["csrf"], "/api/family/invite/resolve", {"lookup": lookup}).status_code, 404)
 
     def test_join_and_shared_features(self):
         a = self.register(self.first, "Parent One", "one@example.test")

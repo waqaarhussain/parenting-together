@@ -4,6 +4,8 @@
   var enc = new TextEncoder();
   var dec = new TextDecoder();
   var PREFIX = "pt1:";
+  var INVITE_ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ";
+  var INVITE_AAD = enc.encode("parenting-together-invite-v1");
 
   function b64(bytes) {
     var value = "";
@@ -24,6 +26,55 @@
     return crypto.getRandomValues(new Uint8Array(length));
   }
 
+  function joinBytes(first, second) {
+    var output = new Uint8Array(first.length + second.length);
+    output.set(first, 0);
+    output.set(second, first.length);
+    return output;
+  }
+
+  function encodeInviteSecret(bytes) {
+    var output = "", buffer = 0, bits = 0;
+    for (var i = 0; i < bytes.length; i += 1) {
+      buffer = (buffer << 8) | bytes[i];
+      bits += 8;
+      while (bits >= 5) {
+        bits -= 5;
+        output += INVITE_ALPHABET[(buffer >>> bits) & 31];
+      }
+      buffer &= (1 << bits) - 1;
+    }
+    if (bits) output += INVITE_ALPHABET[(buffer << (5 - bits)) & 31];
+    return output.match(/.{1,4}/g).join("-");
+  }
+
+  function decodeInviteSecret(code) {
+    var compact = String(code || "").toUpperCase().replace(/[\s-]/g, "");
+    if (compact.length !== 24) throw new Error("Enter the complete 24-character invite code.");
+    var output = [], buffer = 0, bits = 0;
+    for (var i = 0; i < compact.length; i += 1) {
+      var value = INVITE_ALPHABET.indexOf(compact[i]);
+      if (value < 0) throw new Error("That invite code contains an invalid character.");
+      buffer = (buffer << 5) | value;
+      bits += 5;
+      if (bits >= 8) {
+        bits -= 8;
+        output.push((buffer >>> bits) & 255);
+        buffer &= (1 << bits) - 1;
+      }
+    }
+    if (output.length !== 15) throw new Error("That invite code is not valid.");
+    return new Uint8Array(output);
+  }
+
+  async function inviteMaterial(codeOrSecret) {
+    var secret = typeof codeOrSecret === "string" ? decodeInviteSecret(codeOrSecret) : codeOrSecret;
+    var lookup = await crypto.subtle.digest("SHA-256", joinBytes(enc.encode("lookup:"), secret));
+    var keyBytes = await crypto.subtle.digest("SHA-256", joinBytes(enc.encode("key:"), secret));
+    var key = await crypto.subtle.importKey("raw", keyBytes, {name:"AES-GCM"}, false, ["encrypt", "decrypt"]);
+    return {lookup:b64(lookup), key:key};
+  }
+
   function recoveryCode() {
     var parts = [];
     while (parts.length < 16) {
@@ -41,7 +92,7 @@
   }
 
   async function recoveryKey(code, salt) {
-    if (normaliseCode(code).length !== 48) throw new Error("Enter all 16 recovery groups.");
+    if (normaliseCode(code).length !== 48) throw new Error("Enter all 16 recovery phrase groups.");
     var material = await crypto.subtle.importKey("raw", enc.encode(normaliseCode(code)), "PBKDF2", false, ["deriveKey"]);
     return crypto.subtle.deriveKey(
       {name:"PBKDF2", salt:salt, iterations:600000, hash:"SHA-256"}, material,
@@ -62,7 +113,7 @@
         {name:"AES-GCM", iv:unb64(envelope.iv)}, key, unb64(envelope.data)
       ));
     } catch (error) {
-      throw new Error("That recovery code is not correct.");
+      throw new Error("That recovery phrase is not correct.");
     }
   }
 
@@ -159,16 +210,36 @@
     return vaultFromRaw(raw);
   }
 
-  async function acceptShared(userId, encodedRaw) {
-    var raw = unb64(encodedRaw);
+  async function createInvite(vault) {
+    var secret = randomBytes(15), material = await inviteMaterial(secret), iv = randomBytes(12);
+    var data = await crypto.subtle.encrypt(
+      {name:"AES-GCM", iv:iv, additionalData:INVITE_AAD}, material.key, vault.raw
+    );
+    return {code:encodeInviteSecret(secret), lookup:material.lookup,
+      payload:{v:1, iv:b64(iv), data:b64(data)}};
+  }
+
+  async function inviteLookup(code) {
+    return (await inviteMaterial(code)).lookup;
+  }
+
+  async function acceptInvite(code, payload) {
+    if (!payload || payload.v !== 1 || !payload.iv || !payload.data) throw new Error("This secure invite is invalid.");
+    var material = await inviteMaterial(code), raw;
+    try {
+      raw = new Uint8Array(await crypto.subtle.decrypt(
+        {name:"AES-GCM", iv:unb64(payload.iv), additionalData:INVITE_AAD}, material.key, unb64(payload.data)
+      ));
+    } catch (_) {
+      throw new Error("That invite code is incorrect or has expired.");
+    }
     if (raw.length !== 32) throw new Error("This secure invite is invalid.");
-    var code = recoveryCode(), envelope = await wrap(raw, code);
-    await remember(userId, raw);
-    return {vault:await vaultFromRaw(raw), code:code, envelope:envelope};
+    var recovery = recoveryCode(), envelope = await wrap(raw, recovery);
+    return {vault:await vaultFromRaw(raw), code:recovery, envelope:envelope};
   }
 
   async function rememberVault(userId, vault) { await remember(userId, vault.raw); }
 
-  window.PTVault = {create:create, load:load, unlock:unlock, acceptShared:acceptShared,
-    remember:rememberVault, prefix:PREFIX};
+  window.PTVault = {create:create, load:load, unlock:unlock, createInvite:createInvite,
+    inviteLookup:inviteLookup, acceptInvite:acceptInvite, remember:rememberVault, prefix:PREFIX};
 }());

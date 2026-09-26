@@ -105,6 +105,17 @@ def init_db():
         FOREIGN KEY(family_id) REFERENCES families(id) ON DELETE CASCADE,
         FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
     );
+    CREATE TABLE IF NOT EXISTS family_invites (
+        lookup_hash TEXT PRIMARY KEY,
+        family_id INTEGER NOT NULL,
+        created_by INTEGER NOT NULL,
+        payload_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        FOREIGN KEY(family_id) REFERENCES families(id) ON DELETE CASCADE,
+        FOREIGN KEY(created_by) REFERENCES users(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS family_invites_family_idx ON family_invites(family_id);
     CREATE TABLE IF NOT EXISTS children (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         family_id INTEGER NOT NULL,
@@ -669,6 +680,12 @@ def valid_vault_envelope(value):
                     for key in ("salt", "iv", "data")))
 
 
+def valid_invite_payload(value):
+    return (isinstance(value, dict) and value.get("v") == 1
+            and all(isinstance(value.get(key), str) and value.get(key)
+                    for key in ("iv", "data")))
+
+
 @app.post("/api/vault/setup")
 @login_required
 @require_csrf
@@ -737,26 +754,96 @@ def vault_legacy():
     return jsonify(payload)
 
 
+@app.post("/api/family/invite")
+@login_required
+@require_csrf
+def create_family_invite():
+    data = request.get_json(silent=True) or {}
+    lookup = str(data.get("lookup", "")).strip()
+    payload = data.get("payload")
+    uid = session["user_id"]
+    fid = require_family()
+    if len(lookup) != 43 or any(ch not in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_" for ch in lookup):
+        return jsonify({"error": "Invalid secure invite."}), 400
+    if not valid_invite_payload(payload):
+        return jsonify({"error": "Invalid encrypted invite payload."}), 400
+    if len(json.dumps(payload)) > 2048:
+        return jsonify({"error": "Encrypted invite payload is too large."}), 400
+    stamp = datetime.now(timezone.utc).replace(microsecond=0)
+    expires = stamp + timedelta(days=7)
+    with db() as conn:
+        if conn.execute("SELECT COUNT(*) c FROM family_members WHERE family_id=?", (fid,)).fetchone()["c"] >= 2:
+            return jsonify({"error": "This family space already has two parents."}), 409
+        if not family_uses_vault(conn, fid):
+            return jsonify({"error": "Set up the encrypted family vault before creating an invite."}), 409
+        conn.execute("DELETE FROM family_invites WHERE family_id=?", (fid,))
+        conn.execute(
+            "INSERT INTO family_invites(lookup_hash,family_id,created_by,payload_json,created_at,expires_at) VALUES(?,?,?,?,?,?)",
+            (lookup, fid, uid, json.dumps(payload, separators=(",", ":")),
+             stamp.isoformat(timespec="seconds"), expires.isoformat(timespec="seconds")),
+        )
+    return jsonify({"ok": True, "expires_at": expires.isoformat(timespec="seconds")}), 201
+
+
+@app.post("/api/family/invite/resolve")
+@login_required
+@require_csrf
+def resolve_family_invite():
+    data = request.get_json(silent=True) or {}
+    lookup = str(data.get("lookup", "")).strip()
+    if len(lookup) != 43:
+        return jsonify({"error": "That invite code is not valid."}), 400
+    with db() as conn:
+        invite = conn.execute(
+            "SELECT fi.payload_json,fi.expires_at,fi.family_id FROM family_invites fi WHERE fi.lookup_hash=?",
+            (lookup,),
+        ).fetchone()
+        if not invite or invite["expires_at"] <= now_iso():
+            if invite:
+                conn.execute("DELETE FROM family_invites WHERE lookup_hash=?", (lookup,))
+            return jsonify({"error": "That invite code is invalid or has expired."}), 404
+        if conn.execute(
+            "SELECT 1 FROM family_members WHERE family_id=? AND user_id=?",
+            (invite["family_id"], session["user_id"]),
+        ).fetchone():
+            return jsonify({"error": "This account is already in that family space."}), 409
+        if conn.execute("SELECT COUNT(*) c FROM family_members WHERE family_id=?", (invite["family_id"],)).fetchone()["c"] >= 2:
+            return jsonify({"error": "This family space already has two parents."}), 409
+    return jsonify({"payload": json.loads(invite["payload_json"])})
+
+
 @app.post("/api/family/join")
 @login_required
 @require_csrf
 def join_family():
     data = request.get_json(silent=True) or {}
     code = data.get("invite_code", "").strip()
+    invite_lookup = str(data.get("invite_lookup", "")).strip()
     uid = session["user_id"]
     envelope = data.get("envelope")
-    if not code:
+    if not code and not invite_lookup:
         return jsonify({"error": "Enter an invite code."}), 400
     with db() as conn:
-        target = conn.execute("SELECT * FROM families WHERE invite_code=? COLLATE NOCASE", (code,)).fetchone()
+        secure_invite = None
+        if invite_lookup:
+            secure_invite = conn.execute(
+                "SELECT * FROM family_invites WHERE lookup_hash=?", (invite_lookup,)
+            ).fetchone()
+            if not secure_invite or secure_invite["expires_at"] <= now_iso():
+                if secure_invite:
+                    conn.execute("DELETE FROM family_invites WHERE lookup_hash=?", (invite_lookup,))
+                return jsonify({"error": "That invite code is invalid or has expired."}), 404
+            target = conn.execute("SELECT * FROM families WHERE id=?", (secure_invite["family_id"],)).fetchone()
+        else:
+            target = conn.execute("SELECT * FROM families WHERE invite_code=? COLLATE NOCASE", (code,)).fetchone()
         if not target:
             return jsonify({"error": "Invite code not found."}), 404
         target_uses_vault = bool(conn.execute(
             """SELECT 1 FROM family_members fm JOIN user_vaults uv ON uv.user_id=fm.user_id
                WHERE fm.family_id=? LIMIT 1""", (target["id"],)
         ).fetchone())
-        if target_uses_vault and not valid_vault_envelope(envelope):
-            return jsonify({"error": "Open the full secure invite link. A code alone cannot unlock this family."}), 400
+        if target_uses_vault and (not secure_invite or not valid_vault_envelope(envelope)):
+            return jsonify({"error": "Use the complete secure invite code to unlock this family."}), 400
         if conn.execute("SELECT 1 FROM family_members WHERE family_id=? AND user_id=?", (target["id"], uid)).fetchone():
             if valid_vault_envelope(envelope):
                 stamp = now_iso()
@@ -791,6 +878,7 @@ def join_family():
                 (uid, json.dumps(envelope, separators=(",", ":")), stamp, stamp),
             )
         conn.execute("UPDATE families SET invite_code=? WHERE id=?", (unique_invite_code(conn), target["id"]))
+        conn.execute("DELETE FROM family_invites WHERE family_id=?", (target["id"],))
         audit_event(conn, target["id"], uid, "joined", "family", target["id"], "Joined family space")
         joining_user = conn.execute("SELECT name FROM users WHERE id=?", (uid,)).fetchone()
         notify_family(conn, target["id"], uid, "family_joined", "Co-parent connected",
