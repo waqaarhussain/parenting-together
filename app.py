@@ -442,7 +442,7 @@ def list_notifications():
     with db() as conn:
         materialize_event_reminders(conn, fid, uid)
         rows = conn.execute(
-            "SELECT * FROM notifications WHERE family_id=? AND user_id=? ORDER BY id DESC LIMIT 100",
+            "SELECT * FROM notifications WHERE family_id=? AND user_id=? AND read_at IS NULL ORDER BY id DESC LIMIT 100",
             (fid, uid),
         ).fetchall()
         unread = conn.execute(
@@ -867,8 +867,6 @@ def validated_event(data):
         raise ValueError("Title and start date are required.")
     if recurrence not in {"none", "daily", "weekly", "monthly"}:
         raise ValueError("Choose a valid repeat option.")
-    if recurrence != "none" and not recurrence_until:
-        raise ValueError("Choose when the repeating event should end.")
     start = parse_datetime(start_at)
     if end_at and parse_datetime(end_at) <= start:
         raise ValueError("The end time must be after the start time.")

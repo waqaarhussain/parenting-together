@@ -20,7 +20,7 @@ A mobile-first co-parenting PWA focused on calm communication, verifiable record
 - Light, dark and system themes
 - Installable PWA
 - SQLite persistence
-- Nginx + Gunicorn production service
+- Caddy automatic HTTPS + Gunicorn production service
 - update-live helper
 - Confirmed full-data reset helper
 
@@ -32,7 +32,7 @@ Run:
 
 Then open:
 
-    http://YOUR_VPS_IP
+    https://v2202603253680444276.megasrv.de
 
 The installer creates a random server secret. There are no default accounts or hard-coded passwords.
 
@@ -60,6 +60,11 @@ account.
 - Uploads: /var/lib/parenting-together/uploads
 - Environment: /etc/parenting-together.env
 - Service: parenting-together.service
+- HTTPS certificates: /var/lib/caddy
+
+Caddy renews certificates automatically. The app data reset does not remove its
+certificate storage. A complete Ubuntu reinstall removes `/var/lib/caddy`, so
+back that directory up first if you intend to wipe the whole VPS repeatedly.
 
 ## Important evidence wording
 
