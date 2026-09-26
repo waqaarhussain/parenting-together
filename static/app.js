@@ -23,6 +23,7 @@ var icons = {
   moon:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M20 15.2A8 8 0 0 1 8.8 4 8 8 0 1 0 20 15.2z"/></svg>',
   send:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="m22 2-7 20-4-9-9-4zM22 2 11 13"/></svg>',
   bell:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4"/></svg>',
+  feature:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M9 18h6M10 22h4M8.5 14.5A7 7 0 1 1 15.5 14.5c-.9.7-1.5 1.5-1.5 2.5h-4c0-1-.6-1.8-1.5-2.5Z"/><path d="M12 5v5M9.5 7.5h5"/></svg>',
   down:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="m6 9 6 6 6-6"/></svg>',
   plus:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M12 5v14M5 12h14"/></svg>'
 };
@@ -161,6 +162,7 @@ function showAuth() {
   state.chat = null;
   if (liveTimer) clearInterval(liveTimer);
   liveTimer = null;
+  setPageMode(null);
   document.getElementById("auth-view").classList.remove("hidden");
   document.getElementById("app-view").classList.add("hidden");
 }
@@ -169,10 +171,18 @@ function showApp() {
   document.getElementById("app-view").classList.remove("hidden");
   document.getElementById("user-avatar").textContent = initials(state.me.user.name);
   document.getElementById("family-card").innerHTML = '<strong>'+esc(state.me.family.name)+'</strong><span>'+state.me.members.length+' parent'+(state.me.members.length===1?"":"s")+' · '+state.me.children.length+' child profile'+(state.me.children.length===1?"":"s")+'</span>';
+  setPageMode(state.page);
   renderNav();
   applyTheme();
   if (!liveTimer) liveTimer = setInterval(refreshLiveState, 1000);
   refreshLiveState();
+}
+
+function setPageMode(page) {
+  ["messages","calendar","evidence"].forEach(function(name){
+    document.body.classList.toggle("view-"+name, page===name);
+  });
+  document.body.classList.toggle("app-page-locked", ["messages","calendar","evidence"].includes(page));
 }
 
 function renderNav() {
@@ -181,7 +191,7 @@ function renderNav() {
     return '<button class="nav-button '+(state.page===p[0]?"active":"")+'" data-page="'+p[0]+'">'+p[3]+'<span>'+p[1]+'</span>'+(p[0]==="messages"?'<span class="unread-badge hidden"></span>':'')+'</button>';
   }).join("");
   desktop.querySelectorAll("[data-page]").forEach(function(b){ b.onclick=function(){ navigate(b.dataset.page); }; });
-  var mobileKeys = ["home","messages","calendar","evidence","search"];
+  var mobileKeys = ["home","messages","calendar","handovers","decisions","evidence","rules"];
   document.getElementById("mobile-nav").innerHTML = mobileKeys.map(function(k){
     var p = pages.find(function(x){return x[0]===k;});
     return '<button class="'+(state.page===k?"active":"")+'" data-page="'+k+'">'+p[3]+'<span>'+p[1]+'</span>'+(k==="messages"?'<span class="unread-badge hidden"></span>':'')+'</button>';
@@ -223,6 +233,21 @@ async function openNotifications() {
     });
   }catch(e){toast(e.message,"error");}
 }
+function openFeatureRequest() {
+  openModal('<div class="feature-request"><h3>Request a feature</h3><p>Tell us what would make Parenting Together better.</p><form id="feature-request-form" class="form-stack"><div class="field"><label>Your idea</label><textarea name="body" maxlength="100" required placeholder="What would you like us to add?"></textarea><small id="feature-request-count">0 / 100</small></div><button class="primary-button" type="submit">Send request</button></form></div>',function(){
+    var form=document.getElementById("feature-request-form"),input=form.elements.namedItem("body"),count=document.getElementById("feature-request-count");
+    input.oninput=function(){count.textContent=input.value.length+" / 100";};
+    input.focus();
+    form.onsubmit=async function(e){
+      e.preventDefault();
+      var body=input.value.trim();
+      if(!body)return;
+      var button=form.querySelector("button");button.disabled=true;
+      try{await api("/api/feature-requests",{method:"POST",json:{body:body}});closeModal();toast("Feature request sent","success");}
+      catch(err){toast(err.message,"error");button.disabled=false;}
+    };
+  });
+}
 async function refreshLiveState() {
   if (liveBusy || !state.me || document.hidden) return;
   liveBusy = true;
@@ -260,9 +285,12 @@ async function navigate(page) {
   if (state.page === "messages" && page !== "messages") stopTyping();
   if (page !== "messages") state.chat = null;
   state.page = page;
+  setPageMode(page);
   renderNav();
   await render();
-  window.scrollTo({top:0,behavior:"smooth"});
+  window.scrollTo(0,0);
+  var pageElement=document.getElementById("page");
+  if(pageElement)pageElement.scrollTop=0;
 }
 function setHeading() {
   var p = pages.find(function(x){ return x[0] === state.page; }) || pages[0];
@@ -271,6 +299,7 @@ function setHeading() {
 }
 
 async function render() {
+  setPageMode(state.page);
   setHeading();
   var page = document.getElementById("page");
   page.innerHTML = '<div class="empty"><strong>Loading</strong>Pulling your family space together…</div>';
@@ -441,7 +470,10 @@ async function renderMessages() {
   var jump=document.getElementById("jump-latest");
   if(targetId){
     var targetMessage=box.querySelector('[data-message-id="'+targetId+'"]');
-    if(targetMessage){targetMessage.classList.add("message-target");targetMessage.scrollIntoView({block:"center"});}
+    if(targetMessage){
+      targetMessage.classList.add("message-target");
+      box.scrollTop=Math.max(0,targetMessage.offsetTop-(box.clientHeight-targetMessage.offsetHeight)/2);
+    }
   }else box.scrollTop = box.scrollHeight;
   state.messageTarget=null;
   box.addEventListener("scroll", function(){
@@ -484,18 +516,17 @@ async function renderMessages() {
   refreshLiveState();
 }
 
+function localDateTimeValue(value) {
+  return value.getFullYear()+"-"+String(value.getMonth()+1).padStart(2,"0")+"-"+String(value.getDate()).padStart(2,"0")+"T"+String(value.getHours()).padStart(2,"0")+":"+String(value.getMinutes()).padStart(2,"0");
+}
+
 async function renderCalendar() {
   var cur=state.calendarCursor;
   var y=cur.getFullYear(),m=cur.getMonth();
   var first=new Date(y,m,1), start=new Date(y,m,1-first.getDay());
   var rangeEnd=new Date(start);rangeEnd.setDate(rangeEnd.getDate()+41);rangeEnd.setHours(23,59,59,999);
-  var now=new Date(),upcomingEnd=new Date(now);upcomingEnd.setFullYear(upcomingEnd.getFullYear()+2);
-  var loaded=await Promise.all([
-    api("/api/events?start="+encodeURIComponent(start.toISOString())+"&end="+encodeURIComponent(rangeEnd.toISOString())),
-    api("/api/events?start="+encodeURIComponent(now.toISOString())+"&end="+encodeURIComponent(upcomingEnd.toISOString()))
-  ]);
-  var events=loaded[0],upcoming=loaded[1].filter(function(x){return isFutureEvent(x.start_at);}).slice(0,8);
-  state.calendarEvents=events.concat(upcoming.filter(function(item){return !events.some(function(existing){return existing.occurrence_key===item.occurrence_key;});}));
+  var events=await api("/api/events?start="+encodeURIComponent(start.toISOString())+"&end="+encodeURIComponent(rangeEnd.toISOString()));
+  state.calendarEvents=events;
   var today=new Date();
   var cells="";
   for(var i=0;i<42;i++){
@@ -505,13 +536,28 @@ async function renderCalendar() {
     var cls="day"+(d.getMonth()!==m?" other":"")+(d.toDateString()===today.toDateString()?" today":"");
     cells+='<div class="'+cls+'"><div class="day-num">'+d.getDate()+'</div>'+ev.slice(0,3).map(function(x){var target=state.eventTarget===x.id&&(!state.eventTargetAt||String(x.start_at).slice(0,16)===String(state.eventTargetAt).slice(0,16));return '<button class="event-chip'+(target?' event-target':'')+'" data-event-open="'+x.id+'" data-event-start="'+esc(x.start_at)+'">'+esc(x.title)+'</button>';}).join("")+'</div>';
   }
-  document.getElementById("page").innerHTML='<div class="calendar-wrap"><section class="calendar-card"><div class="calendar-head"><button class="tiny-button" id="cal-prev">‹</button><strong>'+cur.toLocaleDateString([],{month:"long",year:"numeric"})+'</strong><button class="tiny-button" id="cal-next">›</button></div><div class="calendar-grid">'+["Sun","Mon","Tue","Wed","Thu","Fri","Sat"].map(function(x){return '<div class="weekday">'+x+'</div>';}).join("")+cells+'</div></section><section class="card"><div class="card-head"><div><h3>Upcoming events</h3><p>School, appointments, clubs and holidays.</p></div><button class="tiny-button primary" id="cal-add">+ Add</button></div>'+listEvents(upcoming)+'</section></div>';
+  var defaultStart=new Date();defaultStart.setHours(defaultStart.getHours()+1,defaultStart.getMinutes(),0,0);
+  var defaultEnd=new Date(defaultStart.getTime()+60*60*1000);
+  document.getElementById("page").innerHTML='<div class="calendar-wrap"><section class="calendar-card"><div class="calendar-head"><button class="tiny-button" id="cal-prev">‹</button><strong>'+cur.toLocaleDateString([],{month:"long",year:"numeric"})+'</strong><button class="tiny-button" id="cal-next">›</button></div><div class="calendar-grid">'+["Sun","Mon","Tue","Wed","Thu","Fri","Sat"].map(function(x){return '<div class="weekday">'+x+'</div>';}).join("")+cells+'</div></section><section class="card quick-event-card"><form id="quick-event-form" class="quick-event-form"><div class="quick-event-heading"><div><h3>Add event</h3><p>Fill it in and add it straight to the calendar.</p></div><button class="tiny-button primary" id="cal-add" type="submit">+ Add</button></div><div class="quick-event-grid"><div class="field quick-title"><label>Title</label><input name="title" required maxlength="200" placeholder="School pickup"></div><div class="field"><label>Type</label><select name="category"><option value="general">General</option><option value="school">School</option><option value="handover">Handover</option><option value="appointment">Appointment</option><option value="club">Club</option><option value="holiday">Holiday</option></select></div><div class="field"><label>Starts</label><input type="datetime-local" name="start_at" required value="'+localDateTimeValue(defaultStart)+'"></div><div class="field"><label>Ends</label><input type="datetime-local" name="end_at" required value="'+localDateTimeValue(defaultEnd)+'"></div><div class="field"><label>Reminder (minutes)</label><input type="number" name="reminder_minutes" min="0" max="10080" list="quick-reminder-times" value="60"><datalist id="quick-reminder-times"><option value="0"><option value="15"><option value="30"><option value="60"><option value="120"><option value="1440"><option value="10080"></datalist></div><div class="field"><label>Repeat</label><select name="recurrence"><option value="none">Does not repeat</option><option value="daily">Daily</option><option value="weekly">Weekly</option><option value="monthly">Monthly</option></select></div><div id="quick-repeat-until" class="field quick-repeat-until hidden"><label>Repeat until <span>(optional)</span></label><input type="date" name="recurrence_until"></div><div class="field quick-notes"><label>Notes</label><textarea name="notes" placeholder="Optional"></textarea></div></div></form></section></div>';
   document.getElementById("cal-prev").onclick=function(){state.calendarCursor=new Date(y,m-1,1);renderCalendar();};
   document.getElementById("cal-next").onclick=function(){state.calendarCursor=new Date(y,m+1,1);renderCalendar();};
-  document.getElementById("cal-add").onclick=openEventModal;
+  var form=document.getElementById("quick-event-form"),startInput=form.elements.namedItem("start_at"),endInput=form.elements.namedItem("end_at"),repeat=form.elements.namedItem("recurrence"),until=document.getElementById("quick-repeat-until"),endLinked=true;
+  endInput.oninput=function(){endLinked=false;};
+  startInput.onchange=function(){if(!endLinked)return;var changed=new Date(startInput.value);if(!isNaN(changed))endInput.value=localDateTimeValue(new Date(changed.getTime()+60*60*1000));};
+  repeat.onchange=function(){until.classList.toggle("hidden",repeat.value==="none");};
+  form.onsubmit=async function(e){
+    e.preventDefault();
+    var fd=new FormData(form),button=document.getElementById("cal-add"),payload={title:fd.get("title"),category:fd.get("category"),start_at:fd.get("start_at"),end_at:fd.get("end_at"),reminder_minutes:Number(fd.get("reminder_minutes")||0),recurrence:fd.get("recurrence"),recurrence_until:fd.get("recurrence_until"),timezone_offset:new Date().getTimezoneOffset(),notes:fd.get("notes")};
+    button.disabled=true;
+    try{var result=await api("/api/events",{method:"POST",json:payload});await renderCalendar();if(result.warnings&&result.warnings.length)toast(result.warnings[0],"error");else toast("Event added","success");}
+    catch(err){toast(err.message,"error");button.disabled=false;}
+  };
   bindEventLinks();
-  var highlighted=document.querySelector(".event-target");
-  if(highlighted)highlighted.scrollIntoView({block:"center",behavior:"smooth"});
+  var highlighted=document.querySelector(".event-target"),calendarPage=document.getElementById("page");
+  if(highlighted&&calendarPage){
+    var targetRect=highlighted.getBoundingClientRect(),pageRect=calendarPage.getBoundingClientRect();
+    calendarPage.scrollTop+=targetRect.top-pageRect.top-(calendarPage.clientHeight-targetRect.height)/2;
+  }
   state.eventTarget=null;state.eventTargetAt=null;
 }
 
@@ -629,6 +675,8 @@ document.getElementById("auth-theme").onclick=cycleTheme;
 document.getElementById("sidebar-theme").onclick=cycleTheme;
 document.getElementById("modal-close").onclick=closeModal;
 document.getElementById("modal").onclick=function(e){if(e.target===e.currentTarget)closeModal();};
+document.getElementById("feature-request-button").innerHTML=icons.feature;
+document.getElementById("feature-request-button").onclick=openFeatureRequest;
 document.getElementById("search-shortcut").innerHTML=icons.search;
 document.getElementById("search-shortcut").onclick=function(){navigate("search");};
 document.getElementById("notification-button").insertAdjacentHTML("afterbegin",icons.bell);
