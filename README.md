@@ -6,9 +6,9 @@ A mobile-first co-parenting PWA focused on calm communication, verifiable record
 
 - Username or email registration and login
 - End-to-end encrypted family content using AES-256-GCM in the browser
-- A 16-group recovery code that never leaves the user's device
+- A 16-group recovery phrase that never leaves the user's device
 - Device-local protected key storage with recovery on a replacement device
-- Secure family invite links with the key kept in the URL fragment
+- Single-use typed family invite codes that keep the key hidden from the VPS
 - Multiple child profiles
 - Saved messages with a SHA-256 hash chain to detect changes
 - Delivered/read timestamps
@@ -73,12 +73,12 @@ back that directory up first if you intend to wipe the whole VPS repeatedly.
 
 Shared text and receipt files are encrypted on the user's device before upload.
 The VPS stores ciphertext, operational metadata and a recovery-wrapped family
-key. The recovery code is not uploaded. Search, receipt decryption and message
+key. The recovery phrase is not uploaded. Search, receipt decryption and message
 export happen in the browser after the vault is unlocked.
 
 Calendar times, record types, account names, usernames, optional email addresses,
 status values and record timestamps remain visible to the server so reminders,
-ordering and account delivery work. Losing every device and the recovery code
+ordering and account delivery work. Losing every device and the recovery phrase
 means the encrypted family data cannot be recovered.
 
 This browser version materially limits routine database access, but the final
