@@ -44,6 +44,49 @@ class TwoParentFlow(unittest.TestCase):
         self.assertIn("no-store", version.headers["Cache-Control"])
         self.assertIn(f'/static/app.css?v={version.json["version"]}', page.get_data(as_text=True))
         self.assertIn(f'/static/app.js?v={version.json["version"]}', page.get_data(as_text=True))
+        self.assertIn(f'/static/vault.js?v={version.json["version"]}', page.get_data(as_text=True))
+
+    def test_username_login_and_vault_migration(self):
+        envelope = {"v": 1, "salt": "salt", "iv": "iv", "data": "wrapped"}
+        created = self.first.post("/api/auth/register", json={
+            "name": "Parent One", "username": "parent.one", "email": "",
+            "password": "sample-password-123", "vault_envelope": envelope,
+        })
+        self.assertEqual(created.status_code, 201, created.get_data(as_text=True))
+        self.assertEqual(created.json["user"]["username"], "parent.one")
+        self.assertEqual(created.json["vault_envelope"], envelope)
+        self.assertEqual(self.post(self.first, created.json["csrf"], "/api/auth/logout", {}).status_code, 200)
+        logged_in = self.first.post("/api/auth/login", json={
+            "identifier": "PARENT.ONE", "password": "sample-password-123",
+        })
+        self.assertEqual(logged_in.status_code, 200, logged_in.get_data(as_text=True))
+
+        legacy = self.post(self.first, logged_in.json["csrf"], "/api/messages", {"body": "legacy text"})
+        self.assertEqual(legacy.status_code, 201)
+        encrypted = "pt1:abcdefghijklmnop:ciphertext"
+        migrated = self.post(self.first, logged_in.json["csrf"], "/api/vault/setup", {
+            "envelope": envelope,
+            "records": [{"table": "messages", "id": legacy.json["id"], "values": {"body": encrypted}}],
+        })
+        self.assertEqual(migrated.status_code, 200, migrated.get_data(as_text=True))
+        with db() as conn:
+            self.assertEqual(conn.execute("SELECT body FROM messages WHERE id=?", (legacy.json["id"],)).fetchone()["body"], encrypted)
+
+    def test_encrypted_family_requires_full_secure_invite(self):
+        envelope = {"v": 1, "salt": "salt", "iv": "iv", "data": "wrapped"}
+        first = self.first.post("/api/auth/register", json={
+            "name": "Parent One", "username": "parent.one", "password": "sample-password-123",
+            "vault_envelope": envelope,
+        }).json
+        second = self.register(self.second, "Parent Two", "two@example.test")
+        code = first["family"]["invite_code"]
+        blocked = self.post(self.second, second["csrf"], "/api/family/join", {"invite_code": code})
+        self.assertEqual(blocked.status_code, 400)
+        joined = self.post(self.second, second["csrf"], "/api/family/join", {
+            "invite_code": code, "envelope": envelope,
+        })
+        self.assertEqual(joined.status_code, 200, joined.get_data(as_text=True))
+        self.assertEqual(joined.json["vault_envelope"], envelope)
 
     def test_join_and_shared_features(self):
         a = self.register(self.first, "Parent One", "one@example.test")

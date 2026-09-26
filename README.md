@@ -4,8 +4,11 @@ A mobile-first co-parenting PWA focused on calm communication, verifiable record
 
 ## What is in v1
 
-- Secure account registration and login
-- Family invite codes and solo mode
+- Username or email registration and login
+- End-to-end encrypted family content using AES-256-GCM in the browser
+- A 16-group recovery code that never leaves the user's device
+- Device-local protected key storage with recovery on a replacement device
+- Secure family invite links with the key kept in the URL fragment
 - Multiple child profiles
 - Saved messages with a SHA-256 hash chain to detect changes
 - Delivered/read timestamps
@@ -14,9 +17,9 @@ A mobile-first co-parenting PWA focused on calm communication, verifiable record
 - Structured decisions with accept/decline/counter history
 - Shared expenses and receipt uploads
 - Agreement rules
-- Global search across messages, events, handovers, decisions, expenses and rules
+- Local decrypted search across messages, dates, names, events, handovers, decisions, expenses and rules
 - Chronological evidence timeline
-- PDF evidence export
+- Local message printing and PDF saving without sending plaintext back to the server
 - Light, dark and system themes
 - Installable PWA
 - SQLite persistence
@@ -65,6 +68,23 @@ account.
 Caddy renews certificates automatically. The app data reset does not remove its
 certificate storage. A complete Ubuntu reinstall removes `/var/lib/caddy`, so
 back that directory up first if you intend to wipe the whole VPS repeatedly.
+
+## Encryption model
+
+Shared text and receipt files are encrypted on the user's device before upload.
+The VPS stores ciphertext, operational metadata and a recovery-wrapped family
+key. The recovery code is not uploaded. Search, receipt decryption and message
+export happen in the browser after the vault is unlocked.
+
+Calendar times, record types, account names, usernames, optional email addresses,
+status values and record timestamps remain visible to the server so reminders,
+ordering and account delivery work. Losing every device and the recovery code
+means the encrypted family data cannot be recovered.
+
+This browser version materially limits routine database access, but the final
+App Store build should also pin the signed client and receive an independent
+security review before making an absolute claim that the service operator can
+never access plaintext.
 
 ## Important evidence wording
 

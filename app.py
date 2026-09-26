@@ -27,6 +27,7 @@ app.config["UPLOAD_DIR"] = os.environ.get("UPLOAD_DIR", str(Path(__file__).with_
 app.config["MAX_CONTENT_LENGTH"] = int(os.environ.get("MAX_UPLOAD_MB", "10")) * 1024 * 1024
 app.config["SESSION_COOKIE_HTTPONLY"] = True
 app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+app.config["SESSION_COOKIE_SECURE"] = os.environ.get("COOKIE_SECURE", "1") == "1"
 
 
 def deployed_version():
@@ -53,7 +54,7 @@ def deployed_version():
 
 app.config["APP_VERSION"] = deployed_version()
 
-ALLOWED_EXTENSIONS = {"png", "jpg", "jpeg", "webp", "pdf"}
+ALLOWED_EXTENSIONS = {"png", "jpg", "jpeg", "webp", "pdf", "ptenc"}
 
 Path(app.config["DATABASE_PATH"]).parent.mkdir(parents=True, exist_ok=True)
 Path(app.config["UPLOAD_DIR"]).mkdir(parents=True, exist_ok=True)
@@ -79,6 +80,13 @@ def init_db():
         email TEXT NOT NULL UNIQUE COLLATE NOCASE,
         password_hash TEXT NOT NULL,
         created_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS user_vaults (
+        user_id INTEGER PRIMARY KEY,
+        envelope_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
     );
     CREATE TABLE IF NOT EXISTS families (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -274,6 +282,19 @@ def init_db():
     """
     with db() as conn:
         conn.executescript(schema)
+        user_columns = {row["name"] for row in conn.execute("PRAGMA table_info(users)")}
+        if "username" not in user_columns:
+            conn.execute("ALTER TABLE users ADD COLUMN username TEXT")
+        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS users_username_idx ON users(username COLLATE NOCASE) WHERE username IS NOT NULL")
+        for user in conn.execute("SELECT id,email FROM users WHERE username IS NULL OR username='' ORDER BY id"):
+            base = (user["email"].split("@", 1)[0] if "@" in user["email"] else "parent")[:24]
+            base = "".join(ch for ch in base if ch.isalnum() or ch in "._-") or "parent"
+            candidate = base
+            suffix = 1
+            while conn.execute("SELECT 1 FROM users WHERE username=? COLLATE NOCASE AND id<>?", (candidate, user["id"])).fetchone():
+                suffix += 1
+                candidate = (base[:24] + str(suffix))[:30]
+            conn.execute("UPDATE users SET username=? WHERE id=?", (candidate, user["id"]))
         event_columns = {row["name"] for row in conn.execute("PRAGMA table_info(events)")}
         migrations = {
             "reminder_minutes": "INTEGER NOT NULL DEFAULT 0",
@@ -393,6 +414,13 @@ def require_family():
     return fid
 
 
+def family_uses_vault(conn, fid):
+    return bool(conn.execute(
+        """SELECT 1 FROM family_members fm JOIN user_vaults uv ON uv.user_id=fm.user_id
+           WHERE fm.family_id=? LIMIT 1""", (fid,)
+    ).fetchone())
+
+
 def audit_event(conn, fid, uid, event_type, entity_type, entity_id, summary, metadata=None):
     conn.execute(
         "INSERT INTO audit(family_id,user_id,event_type,entity_type,entity_id,summary,metadata_json,created_at) VALUES(?,?,?,?,?,?,?,?)",
@@ -438,7 +466,7 @@ def materialize_event_reminders(conn, fid, uid):
                            target_id,target_value,dedupe_key,created_at)
                        VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
                     (fid, uid, event["creator_id"], "event_reminder", "Event reminder",
-                     event["title"] + " starts at " + occurrence["start_at"].replace("T", " "),
+                     event["title"],
                      "event", event["id"], occurrence["start_at"], key, now_iso()),
                 )
                 break
@@ -486,7 +514,7 @@ def read_notifications():
 
 def unique_invite_code(conn):
     for _ in range(20):
-        code = secrets.token_hex(4).upper()
+        code = secrets.token_urlsafe(24)
         if not conn.execute("SELECT 1 FROM families WHERE invite_code=?", (code,)).fetchone():
             return code
     raise RuntimeError("Could not generate invite code")
@@ -494,23 +522,31 @@ def unique_invite_code(conn):
 
 def me_payload(uid):
     with db() as conn:
-        user = conn.execute("SELECT id,name,email,created_at FROM users WHERE id=?", (uid,)).fetchone()
+        user = conn.execute("SELECT id,name,username,email,created_at FROM users WHERE id=?", (uid,)).fetchone()
+        vault = conn.execute("SELECT envelope_json FROM user_vaults WHERE user_id=?", (uid,)).fetchone()
         fid = family_id_for(uid)
         family = None
         members = []
         children = []
+        family_vault_ready = False
         if fid:
             family = conn.execute("SELECT id,name,invite_code,created_at FROM families WHERE id=?", (fid,)).fetchone()
             members = conn.execute(
-                "SELECT u.id,u.name,u.email,fm.role,fm.joined_at FROM family_members fm JOIN users u ON u.id=fm.user_id WHERE fm.family_id=? ORDER BY fm.joined_at",
+                "SELECT u.id,u.name,u.username,u.email,fm.role,fm.joined_at FROM family_members fm JOIN users u ON u.id=fm.user_id WHERE fm.family_id=? ORDER BY fm.joined_at",
                 (fid,),
             ).fetchall()
             children = conn.execute("SELECT * FROM children WHERE family_id=? ORDER BY name", (fid,)).fetchall()
+            family_vault_ready = bool(conn.execute(
+                """SELECT 1 FROM family_members fm JOIN user_vaults uv ON uv.user_id=fm.user_id
+                   WHERE fm.family_id=? LIMIT 1""", (fid,)
+            ).fetchone())
     return {
         "user": rowdict(user),
         "family": rowdict(family),
         "members": [rowdict(x) for x in members],
         "children": [rowdict(x) for x in children],
+        "vault_envelope": json.loads(vault["envelope_json"]) if vault else None,
+        "family_vault_ready": family_vault_ready,
         "csrf": csrf_token(),
     }
 
@@ -547,14 +583,23 @@ def register():
     data = request.get_json(silent=True) or {}
     name = data.get("name", "").strip()
     email = data.get("email", "").strip().lower()
+    username = data.get("username", "").strip().lower()
     password = data.get("password", "")
-    if len(name) < 2 or "@" not in email or len(password) < 8:
-        return jsonify({"error": "Use a name, valid email and password of at least 8 characters."}), 400
+    valid_username = 3 <= len(username) <= 30 and all(ch.isalnum() or ch in "._-" for ch in username)
+    valid_email = bool(email) and "@" in email and len(email) <= 254
+    if len(name) < 2 or (not valid_username and not valid_email) or len(password) < 8:
+        return jsonify({"error": "Use your name, a username or email, and a password of at least 8 characters."}), 400
+    if not username:
+        username = email.split("@", 1)[0][:30]
+        if len(username) < 3 or not all(ch.isalnum() or ch in "._-" for ch in username):
+            username = "parent" + secrets.token_hex(3)
+    if not email:
+        email = "local-" + secrets.token_hex(16) + "@account.invalid"
     try:
         with db() as conn:
             cur = conn.execute(
-                "INSERT INTO users(name,email,password_hash,created_at) VALUES(?,?,?,?)",
-                (name, email, generate_password_hash(password), now_iso()),
+                "INSERT INTO users(name,email,username,password_hash,created_at) VALUES(?,?,?,?,?)",
+                (name, email, username, generate_password_hash(password), now_iso()),
             )
             uid = cur.lastrowid
             code = unique_invite_code(conn)
@@ -567,9 +612,15 @@ def register():
                 "INSERT INTO family_members(family_id,user_id,role,joined_at) VALUES(?,?,?,?)",
                 (fid, uid, "parent", now_iso()),
             )
+            if valid_vault_envelope(data.get("vault_envelope")):
+                stamp = now_iso()
+                conn.execute(
+                    "INSERT INTO user_vaults(user_id,envelope_json,created_at,updated_at) VALUES(?,?,?,?)",
+                    (uid, json.dumps(data["vault_envelope"], separators=(",", ":")), stamp, stamp),
+                )
             audit_event(conn, fid, uid, "created", "family", fid, "Created family space")
     except sqlite3.IntegrityError:
-        return jsonify({"error": "An account with that email already exists."}), 409
+        return jsonify({"error": "That username or email is already in use."}), 409
     session.clear()
     session["user_id"] = uid
     csrf_token()
@@ -579,12 +630,12 @@ def register():
 @app.post("/api/auth/login")
 def login():
     data = request.get_json(silent=True) or {}
-    email = data.get("email", "").strip().lower()
+    identifier = (data.get("identifier") or data.get("email") or "").strip().lower()
     password = data.get("password", "")
     with db() as conn:
-        user = conn.execute("SELECT * FROM users WHERE email=?", (email,)).fetchone()
+        user = conn.execute("SELECT * FROM users WHERE email=? COLLATE NOCASE OR username=? COLLATE NOCASE", (identifier, identifier)).fetchone()
     if not user or not check_password_hash(user["password_hash"], password):
-        return jsonify({"error": "Email or password is incorrect."}), 401
+        return jsonify({"error": "Username, email or password is incorrect."}), 401
     session.clear()
     session["user_id"] = user["id"]
     csrf_token()
@@ -599,20 +650,121 @@ def logout():
     return jsonify({"ok": True})
 
 
+VAULT_FIELDS = {
+    "children": {"name", "birthday"},
+    "messages": {"body"},
+    "events": {"title", "notes"},
+    "handovers": {"title", "location", "response_note"},
+    "decisions": {"title", "details", "response_note"},
+    "expenses": {"title"},
+    "rules": {"title", "value_text"},
+    "audit": {"summary", "metadata_json"},
+    "notifications": {"title", "body"},
+}
+
+
+def valid_vault_envelope(value):
+    return (isinstance(value, dict) and value.get("v") == 1
+            and all(isinstance(value.get(key), str) and value.get(key)
+                    for key in ("salt", "iv", "data")))
+
+
+@app.post("/api/vault/setup")
+@login_required
+@require_csrf
+def setup_vault():
+    """Save a recovery-wrapped family key and atomically encrypt legacy text fields."""
+    data = request.get_json(silent=True) or {}
+    envelope = data.get("envelope")
+    records = data.get("records") or []
+    if not valid_vault_envelope(envelope):
+        return jsonify({"error": "Invalid encrypted vault envelope."}), 400
+    if not isinstance(records, list) or len(records) > 5000:
+        return jsonify({"error": "Invalid vault migration."}), 400
+    prepared = []
+    for record in records:
+        table = record.get("table") if isinstance(record, dict) else None
+        item_id = record.get("id") if isinstance(record, dict) else None
+        values = record.get("values") if isinstance(record, dict) else None
+        if table not in VAULT_FIELDS or not isinstance(item_id, int) or not isinstance(values, dict):
+            return jsonify({"error": "Invalid vault migration record."}), 400
+        keys = list(values)
+        if not keys or any(key not in VAULT_FIELDS[table] for key in keys):
+            return jsonify({"error": "Invalid encrypted field."}), 400
+        if any(value is not None and (not isinstance(value, str) or not value.startswith("pt1:")) for value in values.values()):
+            return jsonify({"error": "Vault migration contains unencrypted text."}), 400
+        prepared.append((table, item_id, values, keys))
+    fid = require_family()
+    uid = session["user_id"]
+    stamp = now_iso()
+    with db() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute("DROP TRIGGER IF EXISTS messages_no_update")
+        conn.execute("DROP TRIGGER IF EXISTS audit_no_update")
+        for table, item_id, values, keys in prepared:
+            assignments = ",".join(key + "=?" for key in keys)
+            params = [values[key] for key in keys] + [item_id, fid]
+            plaintext_only = " AND ".join("(" + key + " IS NULL OR " + key + " NOT LIKE 'pt1:%')" for key in keys)
+            conn.execute("UPDATE " + table + " SET " + assignments + " WHERE id=? AND family_id=? AND " + plaintext_only, params)
+        conn.execute("""CREATE TRIGGER messages_no_update BEFORE UPDATE ON messages
+                        BEGIN SELECT RAISE(ABORT, 'Message records are secure'); END""")
+        conn.execute("""CREATE TRIGGER audit_no_update BEFORE UPDATE ON audit
+                        BEGIN SELECT RAISE(ABORT, 'Audit records are secure'); END""")
+        conn.execute(
+            """INSERT INTO user_vaults(user_id,envelope_json,created_at,updated_at) VALUES(?,?,?,?)
+               ON CONFLICT(user_id) DO UPDATE SET envelope_json=excluded.envelope_json,updated_at=excluded.updated_at""",
+            (uid, json.dumps(envelope, separators=(",", ":")), stamp, stamp),
+        )
+    return jsonify({"ok": True, "vault_envelope": envelope})
+
+
+@app.get("/api/vault/legacy")
+@login_required
+def vault_legacy():
+    fid = require_family()
+    payload = []
+    with db() as conn:
+        for table, fields in VAULT_FIELDS.items():
+            columns = ["id"] + sorted(fields)
+            rows = conn.execute(
+                "SELECT " + ",".join(columns) + " FROM " + table + " WHERE family_id=? ORDER BY id", (fid,)
+            ).fetchall()
+            for row in rows:
+                values = {field: row[field] for field in fields
+                          if row[field] is not None and not str(row[field]).startswith("pt1:")}
+                if values:
+                    payload.append({"table": table, "id": row["id"], "values": values})
+    return jsonify(payload)
+
+
 @app.post("/api/family/join")
 @login_required
 @require_csrf
 def join_family():
     data = request.get_json(silent=True) or {}
-    code = data.get("invite_code", "").strip().upper()
+    code = data.get("invite_code", "").strip()
     uid = session["user_id"]
+    envelope = data.get("envelope")
     if not code:
         return jsonify({"error": "Enter an invite code."}), 400
     with db() as conn:
-        target = conn.execute("SELECT * FROM families WHERE invite_code=?", (code,)).fetchone()
+        target = conn.execute("SELECT * FROM families WHERE invite_code=? COLLATE NOCASE", (code,)).fetchone()
         if not target:
             return jsonify({"error": "Invite code not found."}), 404
+        target_uses_vault = bool(conn.execute(
+            """SELECT 1 FROM family_members fm JOIN user_vaults uv ON uv.user_id=fm.user_id
+               WHERE fm.family_id=? LIMIT 1""", (target["id"],)
+        ).fetchone())
+        if target_uses_vault and not valid_vault_envelope(envelope):
+            return jsonify({"error": "Open the full secure invite link. A code alone cannot unlock this family."}), 400
         if conn.execute("SELECT 1 FROM family_members WHERE family_id=? AND user_id=?", (target["id"], uid)).fetchone():
+            if valid_vault_envelope(envelope):
+                stamp = now_iso()
+                conn.execute(
+                    """INSERT INTO user_vaults(user_id,envelope_json,created_at,updated_at) VALUES(?,?,?,?)
+                       ON CONFLICT(user_id) DO UPDATE SET envelope_json=excluded.envelope_json,updated_at=excluded.updated_at""",
+                    (uid, json.dumps(envelope, separators=(",", ":")), stamp, stamp),
+                )
             return jsonify(me_payload(uid))
         if conn.execute("SELECT COUNT(*) c FROM family_members WHERE family_id=?", (target["id"],)).fetchone()["c"] >= 2:
             return jsonify({"error": "This family space already has two parents."}), 409
@@ -631,6 +783,14 @@ def join_family():
             "INSERT INTO family_members(family_id,user_id,role,joined_at) VALUES(?,?,?,?)",
             (target["id"], uid, "parent", now_iso()),
         )
+        if valid_vault_envelope(envelope):
+            stamp = now_iso()
+            conn.execute(
+                """INSERT INTO user_vaults(user_id,envelope_json,created_at,updated_at) VALUES(?,?,?,?)
+                   ON CONFLICT(user_id) DO UPDATE SET envelope_json=excluded.envelope_json,updated_at=excluded.updated_at""",
+                (uid, json.dumps(envelope, separators=(",", ":")), stamp, stamp),
+            )
+        conn.execute("UPDATE families SET invite_code=? WHERE id=?", (unique_invite_code(conn), target["id"]))
         audit_event(conn, target["id"], uid, "joined", "family", target["id"], "Joined family space")
         joining_user = conn.execute("SELECT name FROM users WHERE id=?", (uid,)).fetchone()
         notify_family(conn, target["id"], uid, "family_joined", "Co-parent connected",
@@ -671,7 +831,7 @@ def add_child():
             "INSERT INTO children(family_id,name,birthday,created_at) VALUES(?,?,?,?)",
             (fid, name, birthday, now_iso()),
         )
-        audit_event(conn, fid, session["user_id"], "created", "child", cur.lastrowid, "Added child profile: " + name)
+        audit_event(conn, fid, session["user_id"], "created", "child", cur.lastrowid, "Added child profile")
     return jsonify({"ok": True, "id": cur.lastrowid}), 201
 
 
@@ -801,8 +961,8 @@ def set_typing():
 def send_message():
     data = request.get_json(silent=True) or {}
     body = data.get("body", "").strip()
-    if not body or len(body) > 5000:
-        return jsonify({"error": "Message must be between 1 and 5,000 characters."}), 400
+    if not body or len(body) > 12000:
+        return jsonify({"error": "Message is too long."}), 400
     fid = require_family()
     uid = session["user_id"]
     created = now_iso()
@@ -909,9 +1069,10 @@ def validated_event(data):
         raise ValueError("Reminder must be between 0 minutes and 7 days.")
     if not -840 <= offset <= 840:
         offset = 0
+    notes = str(data.get("notes", "")).strip()
     return {
-        "title": title[:200], "category": category[:40], "start_at": start_at,
-        "end_at": end_at, "notes": str(data.get("notes", "")).strip()[:5000],
+        "title": title if title.startswith("pt1:") else title[:200], "category": category[:40], "start_at": start_at,
+        "end_at": end_at, "notes": notes if notes.startswith("pt1:") else notes[:5000],
         "reminder_minutes": reminder, "recurrence": recurrence,
         "recurrence_until": recurrence_until, "timezone_offset": offset,
     }
@@ -940,7 +1101,7 @@ def create_event():
              item["recurrence_until"], item["timezone_offset"], stamp, stamp),
         )
         audit_event(conn, fid, uid, "created", "event", cur.lastrowid,
-                    "Calendar event added: " + item["title"], {"warnings": warnings, **item})
+                    "Calendar event added", {"warnings": warnings, **item})
         notify_family(conn, fid, uid, "event_created", "New calendar event", item["title"],
                       "event", cur.lastrowid, item["start_at"])
     return jsonify({"ok": True, "id": cur.lastrowid, "warnings": warnings}), 201
@@ -972,7 +1133,7 @@ def update_event(item_id):
              updated["recurrence_until"], updated["timezone_offset"], now_iso(), item_id, fid),
         )
         audit_event(conn, fid, uid, "updated", "event", item_id,
-                    "Calendar event updated: " + updated["title"],
+                    "Calendar event updated",
                     {"before": rowdict(previous), "after": updated, "warnings": warnings})
         notify_family(conn, fid, uid, "event_updated", "Calendar event changed", updated["title"],
                       "event", item_id, updated["start_at"])
@@ -994,7 +1155,7 @@ def cancel_event(item_id):
             return jsonify({"error": "Event not found."}), 404
         conn.execute("UPDATE events SET cancelled_at=?,updated_at=? WHERE id=?", (stamp, stamp, item_id))
         audit_event(conn, fid, uid, "cancelled", "event", item_id,
-                    "Calendar event cancelled: " + item["title"], {"event": rowdict(item)})
+                    "Calendar event cancelled", {"event": rowdict(item)})
         notify_family(conn, fid, uid, "event_cancelled", "Calendar event cancelled", item["title"],
                       "activity", None, item["start_at"])
     return jsonify({"ok": True})
@@ -1029,7 +1190,7 @@ def create_handover():
             "INSERT INTO handovers(family_id,creator_id,title,scheduled_at,location,status,created_at,updated_at) VALUES(?,?,?,?,?,'pending',?,?)",
             (fid, uid, title, scheduled, data.get("location", "").strip(), stamp, stamp),
         )
-        audit_event(conn, fid, uid, "requested", "handover", cur.lastrowid, "Handover requested: " + title)
+        audit_event(conn, fid, uid, "requested", "handover", cur.lastrowid, "Handover requested")
         notify_family(conn, fid, uid, "handover_requested", "New handover request", title,
                       "handover", cur.lastrowid, scheduled)
     return jsonify({"ok": True, "id": cur.lastrowid}), 201
@@ -1054,7 +1215,7 @@ def respond_handover(item_id):
             "UPDATE handovers SET status=?,response_note=?,updated_at=? WHERE id=?",
             (status, note, now_iso(), item_id),
         )
-        audit_event(conn, fid, uid, status, "handover", item_id, "Handover " + status + ": " + item["title"], {"note": note})
+        audit_event(conn, fid, uid, status, "handover", item_id, "Handover " + status, {"note": note})
         notify_family(conn, fid, uid, "handover_response", "Handover " + status, item["title"],
                       "handover", item_id, item["scheduled_at"])
     return jsonify({"ok": True})
@@ -1072,7 +1233,7 @@ def complete_handover(item_id):
         if not item:
             return jsonify({"error": "Handover not found."}), 404
         conn.execute("UPDATE handovers SET status='completed',completed_at=?,updated_at=? WHERE id=?", (stamp, stamp, item_id))
-        audit_event(conn, fid, uid, "completed", "handover", item_id, "Handover completed: " + item["title"], {"completed_at": stamp})
+        audit_event(conn, fid, uid, "completed", "handover", item_id, "Handover completed", {"completed_at": stamp})
         notify_family(conn, fid, uid, "handover_completed", "Handover completed", item["title"],
                       "handover", item_id, item["scheduled_at"])
     return jsonify({"ok": True, "completed_at": stamp})
@@ -1106,7 +1267,7 @@ def create_decision():
             "INSERT INTO decisions(family_id,creator_id,title,details,deadline,status,created_at,updated_at) VALUES(?,?,?,?,?,'pending',?,?)",
             (fid, uid, title, data.get("details", "").strip(), data.get("deadline") or None, stamp, stamp),
         )
-        audit_event(conn, fid, uid, "requested", "decision", cur.lastrowid, "Decision requested: " + title)
+        audit_event(conn, fid, uid, "requested", "decision", cur.lastrowid, "Decision requested")
         notify_family(conn, fid, uid, "decision_requested", "New decision request", title,
                       "decision", cur.lastrowid, data.get("deadline") or "")
     return jsonify({"ok": True, "id": cur.lastrowid}), 201
@@ -1128,7 +1289,7 @@ def respond_decision(item_id):
             return jsonify({"error": "Decision not found."}), 404
         note = data.get("response_note", "").strip()
         conn.execute("UPDATE decisions SET status=?,response_note=?,updated_at=? WHERE id=?", (status, note, now_iso(), item_id))
-        audit_event(conn, fid, uid, status, "decision", item_id, "Decision " + status + ": " + item["title"], {"note": note})
+        audit_event(conn, fid, uid, status, "decision", item_id, "Decision " + status, {"note": note})
         notify_family(conn, fid, uid, "decision_response", "Decision " + status, item["title"],
                       "decision", item_id, item["deadline"] or "")
     return jsonify({"ok": True})
@@ -1178,9 +1339,9 @@ def create_expense():
             "INSERT INTO expenses(family_id,creator_id,title,amount_pence,split_percent,due_date,status,receipt_path,created_at,updated_at) VALUES(?,?,?,?,?,?,'pending',?,?,?)",
             (fid, uid, title, amount_pence, split_percent, request.form.get("due_date") or None, receipt_path, stamp, stamp),
         )
-        audit_event(conn, fid, uid, "requested", "expense", cur.lastrowid, "Expense requested: " + title, {"amount_pence": amount_pence, "split_percent": split_percent})
+        audit_event(conn, fid, uid, "requested", "expense", cur.lastrowid, "Expense requested", {"amount_pence": amount_pence, "split_percent": split_percent})
         notify_family(conn, fid, uid, "expense_requested", "New expense request",
-                      title + " · £" + format(amount_pence / 100, ".2f"), "expense", cur.lastrowid,
+                      title, "expense", cur.lastrowid,
                       request.form.get("due_date") or "")
     return jsonify({"ok": True, "id": cur.lastrowid}), 201
 
@@ -1200,7 +1361,7 @@ def respond_expense(item_id):
         if not item:
             return jsonify({"error": "Expense not found."}), 404
         conn.execute("UPDATE expenses SET status=?,updated_at=? WHERE id=?", (status, now_iso(), item_id))
-        audit_event(conn, fid, uid, status, "expense", item_id, "Expense " + status + ": " + item["title"])
+        audit_event(conn, fid, uid, status, "expense", item_id, "Expense " + status)
         notify_family(conn, fid, uid, "expense_response", "Expense " + status, item["title"],
                       "expense", item_id, item["due_date"] or "")
     return jsonify({"ok": True})
@@ -1215,6 +1376,33 @@ def receipt(filename):
     if not item:
         return jsonify({"error": "Receipt not found."}), 404
     return send_from_directory(app.config["UPLOAD_DIR"], filename)
+
+
+@app.post("/api/expenses/<int:item_id>/receipt/encrypt")
+@login_required
+@require_csrf
+def encrypt_legacy_receipt(item_id):
+    fid = require_family()
+    upload = request.files.get("receipt")
+    if not upload or not upload.filename or not upload.filename.endswith(".ptenc"):
+        return jsonify({"error": "An encrypted receipt is required."}), 400
+    with db() as conn:
+        item = conn.execute("SELECT receipt_path FROM expenses WHERE id=? AND family_id=?", (item_id, fid)).fetchone()
+        if not item or not item["receipt_path"]:
+            return jsonify({"error": "Receipt not found."}), 404
+        if item["receipt_path"].endswith(".ptenc"):
+            return jsonify({"ok": True, "receipt_path": item["receipt_path"]})
+        new_path = secrets.token_hex(16) + ".ptenc"
+        destination = Path(app.config["UPLOAD_DIR"]) / new_path
+        upload.save(str(destination))
+        old_path = Path(app.config["UPLOAD_DIR"]) / item["receipt_path"]
+        conn.execute("UPDATE expenses SET receipt_path=?,updated_at=? WHERE id=? AND family_id=?",
+                     (new_path, now_iso(), item_id, fid))
+    try:
+        old_path.unlink(missing_ok=True)
+    except OSError:
+        pass
+    return jsonify({"ok": True, "receipt_path": new_path})
 
 
 @app.get("/api/rules")
@@ -1246,7 +1434,7 @@ def create_rule():
             "INSERT INTO rules(family_id,creator_id,title,rule_type,value_text,created_at) VALUES(?,?,?,?,?,?)",
             (fid, uid, title, rule_type, value_text, now_iso()),
         )
-        audit_event(conn, fid, uid, "created", "rule", cur.lastrowid, "Agreement rule added: " + title, {"type": rule_type, "value": value_text})
+        audit_event(conn, fid, uid, "created", "rule", cur.lastrowid, "Agreement rule added", {"type": rule_type})
     return jsonify({"ok": True, "id": cur.lastrowid}), 201
 
 
@@ -1309,6 +1497,8 @@ def search_all():
     patterns = search_variants(q)
     results = []
     with db() as conn:
+        if family_uses_vault(conn, fid):
+            return jsonify({"error": "Encrypted records are searched privately on your device."}), 410
         queries = [
             ("message", "m", "FROM messages m JOIN users u ON u.id=m.sender_id",
              "m.id,m.body title,m.created_at,('From '||u.name||' · '||m.created_at) detail",
@@ -1354,6 +1544,8 @@ def evidence_pdf():
     start = request.args.get("start")
     end = request.args.get("end")
     with db() as conn:
+        if family_uses_vault(conn, fid):
+            return jsonify({"error": "Encrypted messages are exported privately on your device."}), 410
         family = conn.execute("SELECT * FROM families WHERE id=?", (fid,)).fetchone()
         members = conn.execute("SELECT u.name,u.email FROM family_members fm JOIN users u ON u.id=fm.user_id WHERE fm.family_id=?", (fid,)).fetchall()
         children = conn.execute("SELECT name,birthday FROM children WHERE family_id=? ORDER BY name", (fid,)).fetchall()

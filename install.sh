@@ -85,7 +85,7 @@ sleep 1
 if curl -fsS http://127.0.0.1:8765/health >/dev/null; then
   echo
   echo "Parenting Together installed successfully."
-  echo "Open: http://$(hostname -I | awk '{print $1}')"
+  echo "Open: https://v2202603253680444276.megasrv.de"
   echo "Future updates: update-live"
   echo "Full data reset: reset-parenting-together"
 else

@@ -32,13 +32,14 @@
           <button class="auth-tab" data-auth-tab="register">Create account</button>
         </div>
         <form id="login-form" class="auth-form">
-          <div class="field"><label>Email</label><input name="email" type="email" autocomplete="email" required placeholder="you@example.com"></div>
+          <div class="field"><label>Username or email</label><input name="identifier" autocomplete="username" required placeholder="alex or you@example.com"></div>
           <div class="field"><label>Password</label><input name="password" type="password" autocomplete="current-password" required placeholder="••••••••"></div>
           <button class="primary-button wide" type="submit">Sign in</button>
         </form>
         <form id="register-form" class="auth-form hidden">
           <div class="field"><label>Your name</label><input name="name" required placeholder="Alex"></div>
-          <div class="field"><label>Email</label><input name="email" type="email" autocomplete="email" required placeholder="you@example.com"></div>
+          <div class="field"><label>Username</label><input name="username" minlength="3" maxlength="30" autocomplete="username" placeholder="alex"></div>
+          <div class="field"><label>Email <span>(optional if you use a username)</span></label><input name="email" type="email" autocomplete="email" placeholder="you@example.com"></div>
           <div class="field"><label>Password</label><input name="password" minlength="8" type="password" autocomplete="new-password" required placeholder="At least 8 characters"></div>
           <button class="primary-button wide" type="submit">Create family space</button>
           <p class="microcopy">You can use it solo immediately, or invite the other parent afterwards.</p>
@@ -77,6 +78,8 @@
   <div id="modal" class="modal-backdrop hidden"><div class="modal-card"><button id="modal-close" class="modal-close">×</button><div id="modal-content"></div></div></div>
   <div id="toast" class="toast hidden"></div>
   <script>window.PT_APP_VERSION = {{ app_version|tojson }};</script>
+  <script src="/static/qrcode.js?v={{ app_version }}"></script>
+  <script src="/static/vault.js?v={{ app_version }}"></script>
   <script src="/static/app.js?v={{ app_version }}"></script>
 </body>
 </html>

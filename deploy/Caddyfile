@@ -8,9 +8,18 @@
 
 v2202603253680444276.megasrv.de {
     import parenting_proxy
+    tls {
+        issuer acme {
+            dir https://acme.zerossl.com/v2/DV90
+        }
+        issuer acme {
+            dir https://acme-v02.api.letsencrypt.org/directory
+        }
+    }
     header Strict-Transport-Security "max-age=31536000"
-}
-
-:80 {
-    import parenting_proxy
+    header X-Content-Type-Options "nosniff"
+    header X-Frame-Options "DENY"
+    header Referrer-Policy "same-origin"
+    header Permissions-Policy "camera=(), microphone=(), geolocation=()"
+    header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
 }
