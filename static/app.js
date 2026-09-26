@@ -29,15 +29,15 @@ var icons = {
 };
 
 var pages = [
-  ["home","Home","Overview",icons.home],
-  ["messages","Messages","Family chat",icons.chat],
-  ["calendar","Calendar","Shared plans",icons.calendar],
-  ["handovers","Handovers","Pickups & drop-offs",icons.swap],
-  ["decisions","Decisions","Clear approvals",icons.check],
-  ["expenses","Expenses","Shared costs",icons.wallet],
-  ["evidence","Evidence","Timeline & exports",icons.shield],
-  ["rules","Rules","Agreement rules",icons.rules],
-  ["search","Search","Everything at once",icons.search]
+  ["home","Home",icons.home],
+  ["messages","Messages",icons.chat],
+  ["calendar","Calendar",icons.calendar],
+  ["handovers","Handovers",icons.swap],
+  ["decisions","Decisions",icons.check],
+  ["expenses","Expenses",icons.wallet],
+  ["evidence","Evidence",icons.shield],
+  ["rules","Rules",icons.rules],
+  ["search","Search",icons.search]
 ];
 
 function esc(v) {
@@ -273,13 +273,13 @@ function setPageMode(page) {
 function renderNav() {
   var desktop = document.getElementById("desktop-nav");
   desktop.innerHTML = pages.map(function(p){
-    return '<button class="nav-button '+(state.page===p[0]?"active":"")+'" data-page="'+p[0]+'">'+p[3]+'<span>'+p[1]+'</span>'+(p[0]==="messages"?'<span class="unread-badge hidden"></span>':'')+'</button>';
+    return '<button class="nav-button '+(state.page===p[0]?"active":"")+'" data-page="'+p[0]+'">'+p[2]+'<span>'+p[1]+'</span>'+(p[0]==="messages"?'<span class="unread-badge hidden"></span>':'')+'</button>';
   }).join("");
   desktop.querySelectorAll("[data-page]").forEach(function(b){ b.onclick=function(){ navigate(b.dataset.page); }; });
   var mobileKeys = ["home","messages","calendar","handovers","decisions","evidence","rules"];
   document.getElementById("mobile-nav").innerHTML = mobileKeys.map(function(k){
     var p = pages.find(function(x){return x[0]===k;});
-    return '<button class="'+(state.page===k?"active":"")+'" data-page="'+k+'">'+p[3]+'<span>'+p[1]+'</span>'+(k==="messages"?'<span class="unread-badge hidden"></span>':'')+'</button>';
+    return '<button class="'+(state.page===k?"active":"")+'" data-page="'+k+'">'+p[2]+'<span>'+p[1]+'</span>'+(k==="messages"?'<span class="unread-badge hidden"></span>':'')+'</button>';
   }).join("");
   document.querySelectorAll("#mobile-nav [data-page]").forEach(function(b){ b.onclick=function(){ navigate(b.dataset.page); }; });
   updateUnreadBadges();
@@ -380,7 +380,6 @@ async function navigate(page) {
 function setHeading() {
   var p = pages.find(function(x){ return x[0] === state.page; }) || pages[0];
   document.getElementById("page-title").textContent = p[1];
-  document.getElementById("page-eyebrow").textContent = p[2];
 }
 
 async function render() {
