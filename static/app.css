@@ -44,6 +44,7 @@ input[type="date"],input[type="datetime-local"]{min-height:44px;color:var(--text
 .modal-card:has(.notification-centre){width:min(600px,100%)}
 .notification-centre .notification-head{align-items:center;padding-right:42px}
 #mark-notifications-read{flex:none;white-space:nowrap;margin-left:auto}
+body.modal-open{overflow:hidden;overscroll-behavior:none}
 
 body:has(.calendar-wrap),body:has(#export-form){height:100dvh;overflow:hidden;overscroll-behavior:none}
 .app-shell:has(.calendar-wrap),.app-shell:has(#export-form){height:100dvh;min-height:0;overflow:hidden}
@@ -52,11 +53,22 @@ body:has(.calendar-wrap),body:has(#export-form){height:100dvh;overflow:hidden;ov
 
 @media(max-width:760px){
   .app-shell:has(.calendar-wrap),.app-shell:has(#export-form){padding-bottom:0}
-  .page:has(.calendar-wrap),.page:has(#export-form){height:calc(100dvh - 138px);padding:10px}
-  .modal-backdrop:has(.notification-centre),.modal-backdrop:has(#event-form){align-items:center;padding:14px}
-  .modal-card:has(.notification-centre),.modal-card:has(#event-form){width:100%;max-height:80dvh;border-radius:22px;padding:18px}
+  .page:has(.calendar-wrap),.page:has(#export-form){height:calc(100dvh - 138px);padding:0;background:var(--panel)}
+  .page:has(.calendar-wrap) .calendar-wrap{gap:0;background:var(--panel)}
+  .page:has(.calendar-wrap) .calendar-card,.page:has(.calendar-wrap) .calendar-wrap>.card{border:0;border-radius:0;box-shadow:none}
+  .page:has(.calendar-wrap) .calendar-card{border-bottom:1px solid var(--line)}
+  .page:has(#export-form) .page-grid{gap:0;background:var(--panel)}
+  .page:has(#export-form) .card{border:0;border-radius:0;box-shadow:none;border-bottom:1px solid var(--line)}
+  .modal-backdrop:has(.notification-centre){align-items:end;padding:0}
+  .modal-card:has(.notification-centre){width:100%;max-height:76dvh;border-radius:24px 24px 0 0;padding:18px;padding-bottom:calc(18px + env(safe-area-inset-bottom))}
+  .modal-backdrop:has(#event-form){align-items:center;padding:14px}
+  .modal-card:has(#event-form){width:100%;max-height:80dvh;border-radius:22px;padding:18px}
   .modal-card:has(#event-form)>div>p{margin:4px 0 0}
   #event-form.form-stack{gap:10px;margin-top:12px}
   #event-form .field{gap:5px}
+  #event-form input[type="datetime-local"]{width:min(100%,230px)}
   #event-form textarea{min-height:64px}
+  .export-dates{justify-items:start}
+  .export-dates .field{width:100%;align-items:flex-start}
+  .export-dates input{width:min(100%,205px)}
 }
