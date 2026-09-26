@@ -59,6 +59,20 @@ if command -v ufw >/dev/null 2>&1 && ufw status | grep -q '^Status: active'; the
   ufw allow 443/tcp
 fi
 
+HTTPS_OK=0
+for _ in $(seq 1 12); do
+  if curl -fsS --connect-timeout 5 https://v2202603253680444276.megasrv.de/health >/dev/null; then
+    HTTPS_OK=1
+    break
+  fi
+  sleep 5
+done
+if [ "$HTTPS_OK" -ne 1 ]; then
+  echo "HTTPS did not pass its public health check. Recent Caddy log:"
+  journalctl -u caddy -n 35 --no-pager || true
+  exit 1
+fi
+
 echo
 echo "Updated to: $(git rev-parse --short HEAD)"
 echo "Parenting Together is live."

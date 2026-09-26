@@ -1,4 +1,4 @@
-var state = { me: null, page: "home", cache: {}, chat: null, unread: 0, notificationUnread: 0, messageTarget: null, eventTarget: null, eventTargetAt: null, recordTarget: null, calendarEvents: [], calendarCursor: new Date(), theme: localStorage.getItem("pt-theme") || "system" };
+var state = { me: null, vault: null, page: "home", cache: {}, chat: null, unread: 0, notificationUnread: 0, messageTarget: null, eventTarget: null, eventTargetAt: null, recordTarget: null, calendarEvents: [], calendarCursor: new Date(), theme: localStorage.getItem("pt-theme") || "system" };
 var liveTimer = null;
 var liveBusy = false;
 var lastNotificationRefresh = 0;
@@ -85,6 +85,7 @@ async function api(url, options) {
   options.headers = options.headers || {};
   if (state.me && state.me.csrf && options.method && options.method !== "GET") options.headers["X-CSRF-Token"] = state.me.csrf;
   if (options.json !== undefined) {
+    if (state.vault && !url.startsWith("/api/vault/") && !url.startsWith("/api/auth/")) options.json = await encryptRequest(url, options.json);
     options.headers["Content-Type"] = "application/json";
     options.body = JSON.stringify(options.json);
     delete options.json;
@@ -93,7 +94,97 @@ async function api(url, options) {
   var ct = r.headers.get("content-type") || "";
   var data = ct.includes("application/json") ? await r.json() : await r.text();
   if (!r.ok) throw new Error((data && data.error) || "Something went wrong.");
-  return data;
+  return state.vault ? await decryptTree(data) : data;
+}
+
+var protectedFields = {
+  "/api/messages":["body"], "/api/children":["name","birthday"], "/api/events":["title","notes"],
+  "/api/handovers":["title","location","response_note"], "/api/decisions":["title","details","response_note"],
+  "/api/rules":["title","value_text"]
+};
+async function encryptRequest(url, value) {
+  var path=url.split("?")[0], match=Object.keys(protectedFields).find(function(base){return path===base||path.startsWith(base+"/");});
+  if(!match||!value||typeof value!=="object")return value;
+  var copy=Object.assign({},value);
+  for(var field of protectedFields[match])if(copy[field]!=null&&copy[field]!=="")copy[field]=await state.vault.encrypt(copy[field]);
+  return copy;
+}
+async function decryptTree(value) {
+  if(typeof value==="string")return state.vault.decrypt(value);
+  if(Array.isArray(value))return Promise.all(value.map(decryptTree));
+  if(value&&typeof value==="object"){
+    var output={};
+    for(var key of Object.keys(value))output[key]=await decryptTree(value[key]);
+    return output;
+  }
+  return value;
+}
+
+function recoveryModal(code, heading) {
+  return new Promise(function(resolve){
+    document.body.classList.add("modal-required");
+    openModal('<div class="recovery-panel"><p class="eyebrow">PRIVATE FAMILY VAULT</p><h3>'+esc(heading||"Save your recovery code")+'</h3><p>This is the only way to restore your family records on a new device. We cannot see or recover it.</p><div class="recovery-code">'+esc(code)+'</div><button class="soft-button wide" id="copy-recovery" type="button">Copy recovery code</button><label class="recovery-confirm"><input id="recovery-saved" type="checkbox"> I saved it somewhere private</label><button class="primary-button wide" id="recovery-done" type="button" disabled>Continue</button></div>',function(){
+      document.getElementById("copy-recovery").onclick=function(){navigator.clipboard.writeText(code);toast("Recovery code copied","success");};
+      document.getElementById("recovery-saved").onchange=function(){document.getElementById("recovery-done").disabled=!this.checked;};
+      document.getElementById("recovery-done").onclick=function(){closeModal(true);resolve();};
+    });
+  });
+}
+
+function unlockModal(envelope) {
+  return new Promise(function(resolve,reject){
+    document.body.classList.add("modal-required");
+    openModal('<h3>Unlock your family vault</h3><p>Enter the 16-group recovery code shown when this vault was created. It stays on this device.</p><form id="unlock-vault" class="form-stack"><div class="field"><label>Recovery code</label><textarea name="code" autocomplete="off" required placeholder="000 000 000 …"></textarea></div><button class="primary-button" type="submit">Unlock records</button></form>',function(){
+      document.getElementById("unlock-vault").onsubmit=async function(e){e.preventDefault();try{var code=new FormData(e.target).get("code");var vault=await PTVault.unlock(state.me.user.id,envelope,code);closeModal(true);resolve(vault);}catch(error){toast(error.message,"error");}};
+    });
+  });
+}
+
+async function encryptLegacy(records) {
+  var output=[];
+  for(var record of records){var values={};for(var field of Object.keys(record.values))values[field]=await state.vault.encrypt(record.values[field]);output.push({table:record.table,id:record.id,values:values});}
+  return output;
+}
+
+async function encryptLegacyReceipts() {
+  var expenses=await api("/api/expenses");
+  for(var expense of expenses){
+    if(!expense.receipt_path||expense.receipt_path.endsWith(".ptenc"))continue;
+    var response=await fetch("/api/receipts/"+encodeURIComponent(expense.receipt_path));
+    if(!response.ok)throw new Error("Could not secure an existing receipt.");
+    var source=new File([await response.blob()],"legacy-receipt"),encrypted=await state.vault.encryptFile(source),form=new FormData();
+    form.set("receipt",encrypted,crypto.randomUUID()+".ptenc");
+    var saved=await fetch("/api/expenses/"+expense.id+"/receipt/encrypt",{method:"POST",headers:{"X-CSRF-Token":state.me.csrf},body:form});
+    if(!saved.ok)throw new Error("Could not secure an existing receipt.");
+  }
+}
+
+async function ensureVault() {
+  if(!window.crypto||!crypto.subtle)throw new Error("A secure HTTPS connection is required to unlock encrypted records.");
+  var invitation=inviteFromHash();
+  if(invitation){await acceptSecureInvite(invitation);return;}
+  if(state.me.vault_envelope){
+    state.vault=await PTVault.load(state.me.user.id);
+    if(!state.vault)state.vault=await unlockModal(state.me.vault_envelope);
+    await encryptLegacyReceipts();
+    return;
+  }
+  if(state.me.family_vault_ready)throw new Error("This family is already encrypted. Open a fresh secure invite from the connected parent to unlock it on this account.");
+  var created=await PTVault.create();state.vault=created.vault;
+  var legacy=await api("/api/vault/legacy");
+  var records=await encryptLegacy(legacy);
+  await api("/api/vault/setup",{method:"POST",json:{envelope:created.envelope,records:records}});
+  await PTVault.remember(state.me.user.id,state.vault);state.me.vault_envelope=created.envelope;state.me.family_vault_ready=true;
+  await recoveryModal(created.code,"Save your recovery code");
+  await encryptLegacyReceipts();
+}
+
+function inviteFromHash(){var params=new URLSearchParams(location.hash.slice(1));var code=params.get("join"),key=params.get("key");return code&&key?{code:code,key:key}:null;}
+async function acceptSecureInvite(invitation){
+  var accepted=await PTVault.acceptShared(state.me.user.id,invitation.key);state.vault=accepted.vault;
+  state.me=await api("/api/family/join",{method:"POST",json:{invite_code:invitation.code,envelope:accepted.envelope}});
+  state.me.vault_envelope=accepted.envelope;history.replaceState(null,"",location.pathname+location.search);
+  await recoveryModal(accepted.code,"Save your new recovery code");
 }
 
 function toast(msg, type) {
@@ -109,9 +200,11 @@ function openModal(html, onReady) {
   document.body.classList.add("modal-open");
   if (onReady) onReady();
 }
-function closeModal() {
+function closeModal(force) {
+  if(document.body.classList.contains("modal-required")&&!force)return;
   document.getElementById("modal").classList.add("hidden");
   document.body.classList.remove("modal-open");
+  document.body.classList.remove("modal-required");
 }
 
 function setAuthTab(tab) {
@@ -128,6 +221,8 @@ async function bootstrap() {
     var me = await api("/api/me");
     if (!me.authenticated) return showAuth();
     state.me = me;
+    await ensureVault();
+    state.me = await api("/api/me");
     showApp();
     await render();
   } catch (e) {
@@ -353,12 +448,17 @@ function listEvents(items) {
 }
 function bindEventLinks(){document.querySelectorAll("[data-event-open]").forEach(function(button){button.onclick=function(){var id=Number(button.dataset.eventOpen),start=button.dataset.eventStart;if(state.page==="calendar"){var event=state.calendarEvents.find(function(item){return item.id===id&&item.start_at===start;})||state.calendarEvents.find(function(item){return item.id===id;});if(event)openEventModal(event);}else openRecordTarget("event",id,start);};});}
 
+function drawInviteQr(canvas,value){
+  var qr=new PTQRCode(-1,1);qr.addData(value);qr.make();var count=qr.getModuleCount(),quiet=4,size=232,scale=Math.floor(size/(count+quiet*2)),actual=scale*(count+quiet*2),ctx=canvas.getContext("2d");canvas.width=actual;canvas.height=actual;ctx.fillStyle="#fff";ctx.fillRect(0,0,actual,actual);ctx.fillStyle="#080b12";for(var row=0;row<count;row++)for(var col=0;col<count;col++)if(qr.isDark(row,col))ctx.fillRect((col+quiet)*scale,(row+quiet)*scale,scale,scale);
+}
+
 function openInviteModal() {
   var connected = state.me.members.length>1;
-  openModal('<h3>'+(connected?'Family connection':'Connect your co-parent')+'</h3><p>Share this invite code with the other parent. Their records will then join this family space.</p><div class="card" style="text-align:center;margin:18px 0"><div class="invite-code">'+esc(state.me.family.invite_code)+'</div></div><button class="primary-button wide" id="copy-code">Copy invite code</button>' + (!connected ? '<div style="height:18px"></div><p>Already received a code from the other parent?</p><form id="join-family" class="form-stack"><div class="field"><label>Their invite code</label><input name="invite_code" required placeholder="AB12CD34"></div><button class="soft-button" type="submit">Join their family space</button></form>' : ''), function(){
-    document.getElementById("copy-code").onclick=function(){navigator.clipboard.writeText(state.me.family.invite_code);toast("Invite code copied","success");};
-    var form=document.getElementById("join-family");
-    if(form) form.onsubmit=async function(e){e.preventDefault();try{var fd=new FormData(form);var r=await api("/api/family/join",{method:"POST",json:{invite_code:fd.get("invite_code")}});state.me=r;closeModal();showApp();await render();toast("Family spaces connected","success");}catch(err){toast(err.message,"error");}};
+  var secureLink=location.origin+location.pathname+'#join='+encodeURIComponent(state.me.family.invite_code)+'&key='+encodeURIComponent(state.vault.export());
+  openModal('<h3>'+(connected?'Secure family connection':'Connect your co-parent')+'</h3><p>Scan this QR code or send the secure link privately. The encryption key stays after the # sign, so it is never sent to this server. No approval step is required.</p><div class="secure-invite"><canvas id="invite-qr" aria-label="Secure family invite QR code"></canvas><strong>End-to-end encrypted invite</strong><small>Single family space · maximum two parents</small></div><button class="primary-button wide" id="share-invite">Share secure invite</button><button class="soft-button wide" id="copy-invite">Copy secure link</button>', function(){
+    drawInviteQr(document.getElementById("invite-qr"),secureLink);
+    document.getElementById("copy-invite").onclick=function(){navigator.clipboard.writeText(secureLink);toast("Secure invite copied","success");};
+    document.getElementById("share-invite").onclick=async function(){if(navigator.share){try{await navigator.share({title:"Parenting Together invite",text:"Open this private invite to join our family space.",url:secureLink});}catch(_){}}else{await navigator.clipboard.writeText(secureLink);toast("Secure invite copied","success");}};
   });
 }
 
@@ -520,16 +620,24 @@ function localDateTimeValue(value) {
   return value.getFullYear()+"-"+String(value.getMonth()+1).padStart(2,"0")+"-"+String(value.getDate()).padStart(2,"0")+"T"+String(value.getHours()).padStart(2,"0")+":"+String(value.getMinutes()).padStart(2,"0");
 }
 
+async function clientRuleWarnings(payload) {
+  if(payload.category!=="holiday")return [];
+  var rules=await api("/api/rules"),warnings=[];
+  rules.forEach(function(rule){if(rule.rule_type!=="holiday_notice_days")return;var required=Number(rule.value_text),start=new Date(payload.start_at);if(!Number.isFinite(required)||isNaN(start))return;var days=Math.floor((start-Date.now())/86400000);if(days<required)warnings.push("Holiday notice is "+days+" days. Your saved rule requires "+required+" days.");});
+  return warnings;
+}
+
 async function renderCalendar() {
   var cur=state.calendarCursor;
   var y=cur.getFullYear(),m=cur.getMonth();
   var first=new Date(y,m,1), start=new Date(y,m,1-first.getDay());
-  var rangeEnd=new Date(start);rangeEnd.setDate(rangeEnd.getDate()+41);rangeEnd.setHours(23,59,59,999);
+  var daysInMonth=new Date(y,m+1,0).getDate(),cellCount=Math.ceil((first.getDay()+daysInMonth)/7)*7;
+  var rangeEnd=new Date(start);rangeEnd.setDate(rangeEnd.getDate()+cellCount-1);rangeEnd.setHours(23,59,59,999);
   var events=await api("/api/events?start="+encodeURIComponent(start.toISOString())+"&end="+encodeURIComponent(rangeEnd.toISOString()));
   state.calendarEvents=events;
   var today=new Date();
   var cells="";
-  for(var i=0;i<42;i++){
+  for(var i=0;i<cellCount;i++){
     var d=new Date(start);d.setDate(start.getDate()+i);
     var key=d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0");
     var ev=events.filter(function(x){return String(x.start_at).slice(0,10)===key;});
@@ -549,15 +657,12 @@ async function renderCalendar() {
     e.preventDefault();
     var fd=new FormData(form),button=document.getElementById("cal-add"),payload={title:fd.get("title"),category:fd.get("category"),start_at:fd.get("start_at"),end_at:fd.get("end_at"),reminder_minutes:Number(fd.get("reminder_minutes")||0),recurrence:fd.get("recurrence"),recurrence_until:fd.get("recurrence_until"),timezone_offset:new Date().getTimezoneOffset(),notes:fd.get("notes")};
     button.disabled=true;
-    try{var result=await api("/api/events",{method:"POST",json:payload});await renderCalendar();if(result.warnings&&result.warnings.length)toast(result.warnings[0],"error");else toast("Event added","success");}
+    try{var localWarnings=await clientRuleWarnings(payload);var result=await api("/api/events",{method:"POST",json:payload});await renderCalendar();var warnings=localWarnings.concat(result.warnings||[]);if(warnings.length)toast(warnings[0],"error");else toast("Event added","success");}
     catch(err){toast(err.message,"error");button.disabled=false;}
   };
   bindEventLinks();
-  var highlighted=document.querySelector(".event-target"),calendarPage=document.getElementById("page");
-  if(highlighted&&calendarPage){
-    var targetRect=highlighted.getBoundingClientRect(),pageRect=calendarPage.getBoundingClientRect();
-    calendarPage.scrollTop+=targetRect.top-pageRect.top-(calendarPage.clientHeight-targetRect.height)/2;
-  }
+  var highlighted=document.querySelector(".event-target");
+  if(highlighted)highlighted.focus({preventScroll:true});
   state.eventTarget=null;state.eventTargetAt=null;
 }
 
@@ -572,7 +677,7 @@ function openEventModal(existing) {
     var form=document.getElementById("event-form"),repeat=form.elements.namedItem("recurrence"),until=document.getElementById("repeat-until-field");
     function toggleUntil(){var repeats=repeat.value!=="none";until.classList.toggle("hidden",!repeats);}
     repeat.onchange=toggleUntil;toggleUntil();
-    form.onsubmit=async function(e){e.preventDefault();var fd=new FormData(form),payload={title:fd.get("title"),category:fd.get("category"),start_at:fd.get("start_at"),end_at:fd.get("end_at"),reminder_minutes:Number(fd.get("reminder_minutes")||0),recurrence:fd.get("recurrence"),recurrence_until:fd.get("recurrence_until"),timezone_offset:new Date().getTimezoneOffset(),notes:fd.get("notes")};try{var r=await api(editing?"/api/events/"+existing.id:"/api/events",{method:editing?"PUT":"POST",json:payload});closeModal();await renderCalendar();if(r.warnings&&r.warnings.length)toast(r.warnings[0],"error");else toast(editing?"Event updated":"Event added","success");}catch(err){toast(err.message,"error");}};
+    form.onsubmit=async function(e){e.preventDefault();var fd=new FormData(form),payload={title:fd.get("title"),category:fd.get("category"),start_at:fd.get("start_at"),end_at:fd.get("end_at"),reminder_minutes:Number(fd.get("reminder_minutes")||0),recurrence:fd.get("recurrence"),recurrence_until:fd.get("recurrence_until"),timezone_offset:new Date().getTimezoneOffset(),notes:fd.get("notes")};try{var localWarnings=await clientRuleWarnings(payload);var r=await api(editing?"/api/events/"+existing.id:"/api/events",{method:editing?"PUT":"POST",json:payload});closeModal();await renderCalendar();var warnings=localWarnings.concat(r.warnings||[]);if(warnings.length)toast(warnings[0],"error");else toast(editing?"Event updated":"Event added","success");}catch(err){toast(err.message,"error");}};
     var cancel=document.getElementById("cancel-event");if(cancel)cancel.onclick=async function(){if(!confirm("Cancel this event"+(existing.is_recurring?" and all of its repeats":"")+"?"))return;try{await api("/api/events/"+existing.id,{method:"DELETE",json:{}});closeModal();await renderCalendar();toast("Event cancelled","success");}catch(err){toast(err.message,"error");}};
   });
 }
@@ -611,15 +716,16 @@ function respondItem(kind,id,statusValue) {
 
 async function renderExpenses() {
   var items=await api("/api/expenses"),uid=state.me.user.id;
-  document.getElementById("page").innerHTML='<section class="card"><div class="card-head"><div><h3>Shared expenses</h3><p>Receipts, split, request and status stay attached to the same record.</p></div><button class="primary-button" id="add-expense">New expense</button></div>'+(items.length?'<div class="list">'+items.map(function(x){return '<div class="list-item" data-record-type="expense" data-record-id="'+x.id+'"><div class="list-main"><div class="list-title">'+esc(x.title)+' · '+money(x.amount_pence)+'</div><div class="list-sub">'+x.split_percent+'% requested from other parent'+(x.due_date?' · due '+fmtDate(x.due_date):'')+(x.receipt_path?' · <a href="/api/receipts/'+encodeURIComponent(x.receipt_path)+'" target="_blank">receipt</a>':'')+'</div></div><div class="inline-actions">'+status(x.status)+(x.status==="pending"&&x.creator_id!==uid?'<button class="tiny-button" data-eresp="'+x.id+'" data-status="approved">Approve</button><button class="tiny-button" data-eresp="'+x.id+'" data-status="declined">Decline</button>':'')+(x.status==="approved"?'<button class="tiny-button primary" data-eresp="'+x.id+'" data-status="paid">Mark paid</button>':'')+'</div></div>';}).join("")+'</div>':'<div class="empty"><strong>No expenses yet</strong>Add a cost with the receipt and requested split.</div>')+'</section>';
+  document.getElementById("page").innerHTML='<section class="card"><div class="card-head"><div><h3>Shared expenses</h3><p>Receipts, split, request and status stay attached to the same record.</p></div><button class="primary-button" id="add-expense">New expense</button></div>'+(items.length?'<div class="list">'+items.map(function(x){return '<div class="list-item" data-record-type="expense" data-record-id="'+x.id+'"><div class="list-main"><div class="list-title">'+esc(x.title)+' · '+money(x.amount_pence)+'</div><div class="list-sub">'+x.split_percent+'% requested from other parent'+(x.due_date?' · due '+fmtDate(x.due_date):'')+(x.receipt_path?' · <button class="text-button" data-receipt="'+esc(x.receipt_path)+'">encrypted receipt</button>':'')+'</div></div><div class="inline-actions">'+status(x.status)+(x.status==="pending"&&x.creator_id!==uid?'<button class="tiny-button" data-eresp="'+x.id+'" data-status="approved">Approve</button><button class="tiny-button" data-eresp="'+x.id+'" data-status="declined">Decline</button>':'')+(x.status==="approved"?'<button class="tiny-button primary" data-eresp="'+x.id+'" data-status="paid">Mark paid</button>':'')+'</div></div>';}).join("")+'</div>':'<div class="empty"><strong>No expenses yet</strong>Add a cost with the receipt and requested split.</div>')+'</section>';
   document.getElementById("add-expense").onclick=openExpenseModal;
   document.querySelectorAll("[data-eresp]").forEach(function(b){b.onclick=async function(){try{await api("/api/expenses/"+b.dataset.eresp+"/respond",{method:"POST",json:{status:b.dataset.status}});renderExpenses();toast("Expense updated","success");}catch(e){toast(e.message,"error");}};});
+  document.querySelectorAll("[data-receipt]").forEach(function(b){b.onclick=async function(){try{var response=await fetch("/api/receipts/"+encodeURIComponent(b.dataset.receipt));if(!response.ok)throw new Error("Could not download receipt.");var plain=await state.vault.decryptFile(await response.arrayBuffer());var url=URL.createObjectURL(new Blob([plain]));var link=document.createElement("a");link.href=url;link.download="decrypted-receipt";link.click();setTimeout(function(){URL.revokeObjectURL(url);},30000);}catch(error){toast(error.message,"error");}};});
   focusRecordTarget();
 }
 
 function openExpenseModal() {
   openModal('<h3>New shared expense</h3><p>Keep the amount, split and receipt together so neither parent has to hunt through chat later.</p><form id="expense-form" class="form-stack"><div class="field"><label>What was it for?</label><input name="title" required placeholder="School trip"></div><div class="field"><label>Total amount</label><input name="amount" type="number" step="0.01" min="0.01" required placeholder="24.50"></div><div class="field"><label>Request from other parent (%)</label><input name="split_percent" type="number" min="0" max="100" value="50" required></div><div class="field"><label>Due date</label><input name="due_date" type="date"></div><div class="field"><label>Receipt</label><input name="receipt" type="file" accept=".png,.jpg,.jpeg,.webp,.pdf"></div><button class="primary-button" type="submit">Create expense</button></form>',function(){
-    document.getElementById("expense-form").onsubmit=async function(e){e.preventDefault();var form=e.target,fd=new FormData(form);try{var r=await fetch("/api/expenses",{method:"POST",headers:{"X-CSRF-Token":state.me.csrf},body:fd});var data=await r.json();if(!r.ok)throw new Error(data.error||"Could not save expense");closeModal();render();toast("Expense created","success");}catch(err){toast(err.message,"error");}};
+    document.getElementById("expense-form").onsubmit=async function(e){e.preventDefault();var form=e.target,fd=new FormData(form);try{fd.set("title",await state.vault.encrypt(fd.get("title")));var file=fd.get("receipt");if(file&&file.size){fd.set("receipt",await state.vault.encryptFile(file),crypto.randomUUID()+".ptenc");}var r=await fetch("/api/expenses",{method:"POST",headers:{"X-CSRF-Token":state.me.csrf},body:fd});var data=await r.json();if(!r.ok)throw new Error(data.error||"Could not save expense");closeModal();render();toast("Expense created","success");}catch(err){toast(err.message,"error");}};
   });
 }
 
@@ -634,8 +740,20 @@ async function renderEvidence() {
   document.getElementById("page").innerHTML='<div class="page-grid"><section class="card span-4"><div class="card-head"><div><h3>Message records</h3><p>Checking saved messages for changes.</p></div></div><div class="metric-value" style="color:var(--success)">'+(verify.verified?"Checked":"Warning")+'</div><div class="metric-note">'+verify.count+' saved message'+(verify.count===1?"":"s")+'</div><div class="warning-box">The app can detect changes to its saved messages. This does not mean automatic court admissibility.</div></section><section class="card span-8"><div class="card-head"><div><h3>Export Messages</h3><p>Download messages from any date range as a PDF.</p></div></div><form id="export-form" class="form-stack"><div class="export-dates"><div class="field"><label>From</label><input name="start" type="date"></div><div class="field"><label>To</label><input name="end" type="date"></div></div><button class="primary-button" type="submit">Download messages</button></form></section><section class="card span-12"><div class="card-head"><div><h3>Recent activity</h3><p>Actions are automatically timestamped and cannot be edited through the app.</p></div></div>'+timelineHtml(items)+'</section></div>';
   var exportForm=document.getElementById("export-form"),fromDate=exportForm.elements.namedItem("start"),toDate=exportForm.elements.namedItem("end");
   fromDate.onchange=function(){toDate.min=fromDate.value;if(toDate.value&&toDate.value<fromDate.value)toDate.value=fromDate.value;};
-  exportForm.onsubmit=function(e){e.preventDefault();var fd=new FormData(e.target),q=new URLSearchParams();if(fd.get("start")&&fd.get("end")&&fd.get("start")>fd.get("end")){toast("The From date must be before the To date.","error");return;}if(fd.get("start"))q.set("start",fd.get("start"));if(fd.get("end"))q.set("end",fd.get("end"));window.location="/api/evidence.pdf?"+q.toString();};
+  exportForm.onsubmit=async function(e){e.preventDefault();var fd=new FormData(e.target);if(fd.get("start")&&fd.get("end")&&fd.get("start")>fd.get("end")){toast("The From date must be before the To date.","error");return;}try{var messages=await allMessages();messages=messages.filter(function(x){var day=String(x.created_at).slice(0,10);return(!fd.get("start")||day>=fd.get("start"))&&(!fd.get("end")||day<=fd.get("end"));});printMessageExport(messages);}catch(error){toast(error.message,"error");}};
   focusRecordTarget();
+}
+
+async function allMessages(){
+  var output=[],batch=await api("/api/messages");output=batch.concat(output);
+  while(batch.length===50){batch=await api("/api/messages?before="+batch[0].id);output=batch.concat(output);}
+  return output;
+}
+function printMessageExport(messages){
+  var win=window.open("","_blank");if(!win){toast("Allow pop-ups to export messages.","error");return;}
+  var rows=messages.map(function(m){return '<article><small>'+esc(m.sender_name)+' · '+esc(new Date(m.created_at).toLocaleString())+'</small><p>'+esc(m.body).replace(/\n/g,"<br>")+'</p><code>'+esc(m.record_hash)+'</code></article>';}).join("");
+  win.document.write('<!doctype html><html><head><title>Parenting Together messages</title><style>body{font:14px system-ui;margin:32px;color:#111}h1{font-size:24px}article{padding:14px 0;border-bottom:1px solid #ddd;break-inside:avoid}small,code{color:#666;font-size:10px}p{white-space:normal;line-height:1.5}@media print{button{display:none}}</style></head><body><h1>Parenting Together messages</h1><p>Decrypted locally on this device. Generated '+esc(new Date().toLocaleString())+'.</p><button onclick="print()">Save as PDF / Print</button>'+rows+'</body></html>');
+  win.document.close();setTimeout(function(){win.print();},300);
 }
 
 async function renderRules() {
@@ -663,11 +781,21 @@ function openRecordTarget(type,id,targetValue){
   navigate(pagesByType[type]||"home");
 }
 
+async function localSearch(query){
+  var messagePromise=allMessages();
+  var values=await Promise.all([messagePromise,api("/api/events"),api("/api/handovers"),api("/api/decisions"),api("/api/expenses"),api("/api/rules"),api("/api/timeline?limit=1000")]);
+  var groups=["message","event","handover","decision","expense","rule","activity"],items=[];
+  values.forEach(function(rows,index){rows.forEach(function(row){var type=groups[index],title=row.title||row.body||row.summary||type,detail=row.details||row.notes||row.location||row.value_text||row.response_note||row.detail||"";items.push(Object.assign({},row,{type:type,title:title,detail:detail,target_at:type==="event"?row.start_at:null}));});});
+  (state.me.children||[]).forEach(function(row){items.push(Object.assign({},row,{type:"child",title:row.name,detail:row.birthday||"Child profile"}));});
+  var needle=query.toLocaleLowerCase();
+  return items.filter(function(item){var searchable=Object.values(item).filter(function(value){return value!=null&&typeof value!=="object";}).map(function(value){var text=String(value);var date=new Date(text);if(!isNaN(date)&&/\d{4}-\d{2}/.test(text))text+=" "+date.toLocaleString()+" "+date.toLocaleDateString(undefined,{day:"2-digit",month:"long",year:"numeric"});return text;}).join(" ").toLocaleLowerCase();return searchable.includes(needle);}).sort(function(a,b){return String(b.created_at||b.start_at||"").localeCompare(String(a.created_at||a.start_at||""));}).slice(0,100);
+}
+
 function renderSearch() {
   document.getElementById("page").innerHTML='<div class="search-box"><input id="global-search" class="search-input" autocomplete="off" placeholder="Search words, names, dates, amounts, receipt filenames…"><div id="search-results" class="search-results"><div class="empty"><strong>Search the family record</strong>Messages, events, child profiles, handovers, decisions, expenses, rules and activity.</div></div></div>';
   var input=document.getElementById("global-search"),timer;
   input.focus();
-  input.oninput=function(){clearTimeout(timer);timer=setTimeout(async function(){var q=input.value.trim();if(q.length<2){document.getElementById("search-results").innerHTML='<div class="empty"><strong>Keep typing</strong>Enter at least two characters.</div>';return;}try{var items=await api("/api/search?q="+encodeURIComponent(q)),results=document.getElementById("search-results");results.innerHTML=items.length?'<div class="list">'+items.map(function(x){return '<button class="list-item search-result" data-result-type="'+esc(x.type)+'" data-result-id="'+x.id+'" data-result-value="'+esc(x.target_at||'')+'"><div class="list-main"><div class="search-type">'+esc(x.type)+'</div><div class="list-title">'+esc(x.title)+'</div><div class="list-sub">'+esc(x.detail||"")+' · '+fmt(x.created_at)+'</div></div><span class="result-arrow">›</span></button>';}).join("")+'</div>':'<div class="empty"><strong>No matches</strong>Nothing in the family record matched that search.</div>';results.querySelectorAll("[data-result-type]").forEach(function(button){button.onclick=function(){openRecordTarget(button.dataset.resultType,Number(button.dataset.resultId),button.dataset.resultValue||null);};});}catch(e){toast(e.message,"error");}},260);};
+  input.oninput=function(){clearTimeout(timer);timer=setTimeout(async function(){var q=input.value.trim();if(q.length<2){document.getElementById("search-results").innerHTML='<div class="empty"><strong>Keep typing</strong>Enter at least two characters.</div>';return;}try{var items=await localSearch(q),results=document.getElementById("search-results");results.innerHTML=items.length?'<div class="list">'+items.map(function(x){return '<button class="list-item search-result" data-result-type="'+esc(x.type)+'" data-result-id="'+x.id+'" data-result-value="'+esc(x.target_at||'')+'"><div class="list-main"><div class="search-type">'+esc(x.type)+'</div><div class="list-title">'+esc(x.title)+'</div><div class="list-sub">'+esc(x.detail||"")+' · '+fmt(x.created_at||x.start_at)+'</div></div><span class="result-arrow">›</span></button>';}).join("")+'</div>':'<div class="empty"><strong>No matches</strong>Nothing in the family record matched that search.</div>';results.querySelectorAll("[data-result-type]").forEach(function(button){button.onclick=function(){openRecordTarget(button.dataset.resultType,Number(button.dataset.resultId),button.dataset.resultValue||null);};});}catch(e){toast(e.message,"error");}},260);};
 }
 
 document.querySelectorAll(".auth-tab").forEach(function(b){b.onclick=function(){setAuthTab(b.dataset.authTab);};});
@@ -681,7 +809,7 @@ document.getElementById("search-shortcut").innerHTML=icons.search;
 document.getElementById("search-shortcut").onclick=function(){navigate("search");};
 document.getElementById("notification-button").insertAdjacentHTML("afterbegin",icons.bell);
 document.getElementById("notification-button").onclick=openNotifications;
-document.getElementById("login-form").onsubmit=async function(e){e.preventDefault();var fd=new FormData(e.target);try{state.me=await api("/api/auth/login",{method:"POST",json:{email:fd.get("email"),password:fd.get("password")}});showApp();render();}catch(err){toast(err.message,"error");}};
-document.getElementById("register-form").onsubmit=async function(e){e.preventDefault();var fd=new FormData(e.target);try{state.me=await api("/api/auth/register",{method:"POST",json:{name:fd.get("name"),email:fd.get("email"),password:fd.get("password")}});showApp();render();toast("Your family space is ready","success");}catch(err){toast(err.message,"error");}};
+document.getElementById("login-form").onsubmit=async function(e){e.preventDefault();var fd=new FormData(e.target);try{state.me=await api("/api/auth/login",{method:"POST",json:{identifier:fd.get("identifier"),password:fd.get("password")}});await ensureVault();state.me=await api("/api/me");showApp();render();}catch(err){toast(err.message,"error");}};
+document.getElementById("register-form").onsubmit=async function(e){e.preventDefault();var fd=new FormData(e.target);try{var created=await PTVault.create();state.me=await api("/api/auth/register",{method:"POST",json:{name:fd.get("name"),username:fd.get("username"),email:fd.get("email"),password:fd.get("password"),vault_envelope:created.envelope}});state.vault=created.vault;await PTVault.remember(state.me.user.id,state.vault);await recoveryModal(created.code,"Save your recovery code");showApp();render();toast("Your encrypted family space is ready","success");}catch(err){toast(err.message,"error");}};
 document.getElementById("logout-button").onclick=async function(){try{await api("/api/auth/logout",{method:"POST",json:{}});}catch(e){}location.reload();};
 bootstrap();
