@@ -3,6 +3,7 @@ import os
 import tempfile
 import time
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 _import_dir = tempfile.TemporaryDirectory()
@@ -132,6 +133,11 @@ class TwoParentFlow(unittest.TestCase):
         self.assertEqual(earliest[0]["body"], "Message 0")
         self.assertEqual(self.second.get("/api/messages/status").json["unread"], 0)
         self.assertEqual(self.second.get(f"/api/messages?after={latest[-1]['id']}").json, [])
+        context = self.second.get(f"/api/messages?around={middle[10]['id']}").json
+        self.assertEqual(context["target_id"], middle[10]["id"])
+        self.assertTrue(context["has_older"])
+        self.assertTrue(context["has_newer"])
+        self.assertIn(middle[10]["id"], {message["id"] for message in context["messages"]})
 
         self.assertEqual(self.post(self.first, a["csrf"], "/api/messages/typing", {"typing": True}).status_code, 200)
         self.assertEqual(self.second.get("/api/messages/status").json["typing_name"], "Parent One")
@@ -141,6 +147,58 @@ class TwoParentFlow(unittest.TestCase):
         self.assertEqual(self.post(self.first, a["csrf"], "/api/messages/typing", {"typing": True}).status_code, 200)
         self.assertEqual(self.post(self.first, a["csrf"], "/api/messages/typing", {"typing": False}).status_code, 200)
         self.assertIsNone(self.second.get("/api/messages/status").json["typing_name"])
+
+    def test_notifications_recurring_events_and_event_changes(self):
+        a = self.register(self.first, "Parent One", "one@example.test")
+        b = self.register(self.second, "Parent Two", "two@example.test")
+        self.assertEqual(self.post(self.second, b["csrf"], "/api/family/join", {"invite_code": a["family"]["invite_code"]}).status_code, 200)
+
+        joined = self.first.get("/api/notifications").json
+        self.assertEqual(joined["unread"], 1)
+        self.assertEqual(joined["items"][0]["notification_type"], "family_joined")
+        self.assertEqual(self.post(self.first, a["csrf"], "/api/notifications/read", {}).status_code, 200)
+
+        self.assertEqual(self.post(self.first, a["csrf"], "/api/messages", {"body": "Bring the school bag"}).status_code, 201)
+        message_notice = self.second.get("/api/notifications").json
+        self.assertTrue(any(item["notification_type"] == "message" for item in message_notice["items"]))
+
+        starts = (datetime.now(timezone.utc) + timedelta(minutes=30)).replace(tzinfo=None, second=0, microsecond=0)
+        repeat_until = (starts + timedelta(days=2)).date().isoformat()
+        payload = {"title": "Medicine", "category": "appointment", "start_at": starts.isoformat(timespec="minutes"),
+                   "end_at": "", "notes": "Bring prescription", "reminder_minutes": 60,
+                   "recurrence": "daily", "recurrence_until": repeat_until, "timezone_offset": 0}
+        created = self.post(self.first, a["csrf"], "/api/events", payload)
+        self.assertEqual(created.status_code, 201, created.get_data(as_text=True))
+        event_id = created.json["id"]
+
+        event_rows = self.second.get(
+            "/api/events?start=" + starts.date().isoformat() + "&end=" + (starts + timedelta(days=3)).isoformat()
+        ).json
+        self.assertEqual(len([item for item in event_rows if item["id"] == event_id]), 3)
+        self.assertTrue(all(item["is_recurring"] for item in event_rows if item["id"] == event_id))
+
+        creator_notices = self.first.get("/api/notifications").json
+        self.assertTrue(any(item["notification_type"] == "event_reminder" for item in creator_notices["items"]))
+        other_notices = self.second.get("/api/notifications").json
+        self.assertTrue(any(item["notification_type"] == "event_created" for item in other_notices["items"]))
+
+        payload["title"] = "Updated medicine appointment"
+        updated = self.first.put(f"/api/events/{event_id}", json=payload, headers={"X-CSRF-Token": a["csrf"]})
+        self.assertEqual(updated.status_code, 200, updated.get_data(as_text=True))
+        event_search = self.second.get("/api/search?q=Updated%20medicine").json
+        match = next(item for item in event_search if item["type"] == "event")
+        self.assertEqual(match["id"], event_id)
+        self.assertEqual(match["target_at"], payload["start_at"])
+
+        cancelled = self.first.delete(f"/api/events/{event_id}", json={}, headers={"X-CSRF-Token": a["csrf"]})
+        self.assertEqual(cancelled.status_code, 200)
+        remaining = self.second.get(
+            "/api/events?start=" + starts.date().isoformat() + "&end=" + (starts + timedelta(days=3)).isoformat()
+        ).json
+        self.assertFalse(any(item["id"] == event_id for item in remaining))
+        event_activity = [item["event_type"] for item in self.first.get("/api/timeline").json if item["entity_type"] == "event"]
+        self.assertIn("updated", event_activity)
+        self.assertIn("cancelled", event_activity)
 
 
 if __name__ == "__main__":
