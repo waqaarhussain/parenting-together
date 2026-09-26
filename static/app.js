@@ -5,6 +5,9 @@ var lastNotificationRefresh = 0;
 var typingActive = false;
 var typingIdleTimer = null;
 var typingHeartbeat = null;
+var appVersion = window.PT_APP_VERSION || "dev";
+var appUpdatePending = false;
+var appUpdateTimer = null;
 
 var icons = {
   home:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M3 10.5 12 3l9 7.5v9a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 19.5z"/><path d="M9 21v-7h6v7"/></svg>',
@@ -114,7 +117,8 @@ function setAuthTab(tab) {
 
 async function bootstrap() {
   applyTheme();
-  if ("serviceWorker" in navigator) navigator.serviceWorker.register("/static/sw.js").catch(function(){});
+  if ("serviceWorker" in navigator) navigator.serviceWorker.register("/static/sw.js?v=" + encodeURIComponent(appVersion), {updateViaCache:"none"}).catch(function(){});
+  startAppUpdateWatcher();
   try {
     var me = await api("/api/me");
     if (!me.authenticated) return showAuth();
@@ -125,6 +129,27 @@ async function bootstrap() {
     showAuth();
     toast(e.message, "error");
   }
+}
+
+async function checkForAppUpdate() {
+  if (appUpdatePending) return;
+  try {
+    var response = await fetch("/api/version?t=" + Date.now(), {cache:"no-store", credentials:"same-origin"});
+    if (!response.ok) return;
+    var deployed = await response.json();
+    if (!deployed.version || deployed.version === appVersion) return;
+    appUpdatePending = true;
+    window.location.replace("/?v=" + encodeURIComponent(deployed.version));
+  } catch (e) {}
+}
+
+function startAppUpdateWatcher() {
+  if (appUpdateTimer) return;
+  checkForAppUpdate();
+  appUpdateTimer = setInterval(checkForAppUpdate, 20000);
+  document.addEventListener("visibilitychange", function(){
+    if (!document.hidden) checkForAppUpdate();
+  });
 }
 
 function showAuth() {
