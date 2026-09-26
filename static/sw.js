@@ -1,4 +1,4 @@
-const CACHE = "parenting-together-v2";
+const CACHE = "parenting-together-v3";
 const STATIC = ["/", "/static/app.css", "/static/app.js", "/static/icon.svg", "/static/manifest.webmanifest"];
 self.addEventListener("install", function(event) {
   event.waitUntil(caches.open(CACHE).then(function(cache) { return cache.addAll(STATIC); }));
