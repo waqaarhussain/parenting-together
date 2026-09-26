@@ -1,8 +1,9 @@
 var state = { me: null, page: "home", cache: {}, chat: null, unread: 0, calendarCursor: new Date(), theme: localStorage.getItem("pt-theme") || "system" };
 var liveTimer = null;
 var liveBusy = false;
-var typingLastSent = 0;
 var typingActive = false;
+var typingIdleTimer = null;
+var typingHeartbeat = null;
 
 var icons = {
   home:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M3 10.5 12 3l9 7.5v9a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 19.5z"/><path d="M9 21v-7h6v7"/></svg>',
@@ -138,7 +139,7 @@ function showApp() {
   document.getElementById("family-card").innerHTML = '<strong>'+esc(state.me.family.name)+'</strong><span>'+state.me.members.length+' parent'+(state.me.members.length===1?"":"s")+' · '+state.me.children.length+' child profile'+(state.me.children.length===1?"":"s")+'</span>';
   renderNav();
   applyTheme();
-  if (!liveTimer) liveTimer = setInterval(refreshLiveState, 2500);
+  if (!liveTimer) liveTimer = setInterval(refreshLiveState, 1000);
   refreshLiveState();
 }
 
@@ -331,10 +332,28 @@ async function loadOlderMessages() {
   }
 }
 function stopTyping() {
+  if (typingIdleTimer) clearTimeout(typingIdleTimer);
+  if (typingHeartbeat) clearInterval(typingHeartbeat);
+  typingIdleTimer = null;
+  typingHeartbeat = null;
   if (!typingActive || !state.me) return;
   typingActive = false;
-  typingLastSent = 0;
   api("/api/messages/typing", {method:"POST", json:{typing:false}}).catch(function(){});
+}
+function startTyping(input) {
+  if (typingIdleTimer) clearTimeout(typingIdleTimer);
+  if (!typingActive) {
+    typingActive = true;
+    api("/api/messages/typing", {method:"POST", json:{typing:true}}).catch(function(){});
+  }
+  if (!typingHeartbeat) {
+    typingHeartbeat = setInterval(function(){
+      if (typingActive && input.value.trim() && document.activeElement === input) {
+        api("/api/messages/typing", {method:"POST", json:{typing:true}}).catch(function(){});
+      }
+    }, 3000);
+  }
+  typingIdleTimer = setTimeout(stopTyping, 1800);
 }
 async function renderMessages() {
   var messages = await api("/api/messages");
@@ -342,10 +361,10 @@ async function renderMessages() {
   if (state.page !== "messages") return;
   state.chat = {messages:messages, hasOlder:messages.length===50, loadingOlder:false, polling:false};
   document.getElementById("page").innerHTML =
-    '<div class="chat-shell"><div class="chat-header"><div><strong>Family messages</strong><br><span>Sent messages cannot be edited or deleted.</span><span id="typing-indicator" class="typing-indicator hidden"></span></div><span class="integrity"><i class="integrity-dot"></i>'+(verify.verified?"Records checked":"Record check failed")+'</span></div>'+
+    '<div class="chat-shell"><div class="chat-header"><div><strong>Family messages</strong><br><span>Sent messages cannot be edited or deleted.</span></div><span class="integrity"><i class="integrity-dot"></i>'+(verify.verified?"Records checked":"Record check failed")+'</span></div>'+
     '<div id="messages" class="messages"><div id="history-trigger"><button id="load-older" class="tiny-button'+(messages.length===50?'':' hidden')+'" type="button">Load earlier messages</button></div>'+
     (messages.length?messages.map(messageHtml).join(""):'<div class="empty"><strong>No messages yet</strong>Start the conversation. Sent messages stay in the family record.</div>')+'</div>'+
-    '<form id="message-form" class="chat-compose"><textarea name="body" maxlength="5000" placeholder="Write a message…" required></textarea><button class="send-button" aria-label="Send">'+icons.send+'</button></form></div>';
+    '<div class="compose-area"><div id="typing-indicator" class="typing-indicator hidden"></div><form id="message-form" class="chat-compose"><textarea name="body" maxlength="5000" placeholder="Write a message…" required></textarea><button class="send-button" aria-label="Send">'+icons.send+'</button></form></div></div>';
   var box = document.getElementById("messages");
   box.scrollTop = box.scrollHeight;
   box.addEventListener("scroll", function(){
@@ -363,11 +382,7 @@ async function renderMessages() {
   });
   input.addEventListener("input", function(){
     if (!input.value.trim()) { stopTyping(); return; }
-    if (Date.now() - typingLastSent > 2500) {
-      typingLastSent = Date.now();
-      typingActive = true;
-      api("/api/messages/typing", {method:"POST", json:{typing:true}}).catch(function(){});
-    }
+    startTyping(input);
   });
   input.addEventListener("blur", stopTyping);
   form.onsubmit = async function(e){
@@ -460,14 +475,14 @@ function openExpenseModal() {
 }
 
 function timelineHtml(items) {
-  if(!items.length)return '<div class="empty"><strong>No evidence records yet</strong>Activity will appear here automatically.</div>';
-  return '<div class="timeline">'+items.map(function(x){return '<div class="timeline-item"><div class="timeline-type">'+esc(x.entity_type)+' · '+esc(x.event_type)+'</div><div class="timeline-title">'+esc(x.summary.replace(/immutable/gi,"saved"))+'</div><div class="timeline-meta">'+fmt(x.created_at)+' · '+esc(x.actor_name||"System")+'</div></div>';}).join("")+'</div>';
+  if(!items.length)return '<div class="empty"><strong>No recent activity yet</strong>Activity will appear here automatically.</div>';
+  return '<div class="timeline">'+items.map(function(x){return '<div class="timeline-item"><div class="timeline-type">'+esc(x.entity_type)+' · '+esc(x.event_type)+'</div><div class="timeline-title">'+esc(x.summary.replace(/immutable/gi,"saved"))+'</div>'+(x.detail?'<div class="timeline-detail">'+esc(x.detail)+'</div>':'')+'<div class="timeline-meta">'+fmt(x.created_at)+' · '+esc(x.actor_name||"System")+'</div></div>';}).join("")+'</div>';
 }
 
 async function renderEvidence() {
   var items=await api("/api/timeline?limit=500");
   var verify=await api("/api/messages/verify");
-  document.getElementById("page").innerHTML='<div class="page-grid"><section class="card span-4"><div class="card-head"><div><h3>Message records</h3><p>Checking saved messages for changes.</p></div></div><div class="metric-value" style="color:var(--success)">'+(verify.verified?"Checked":"Warning")+'</div><div class="metric-note">'+verify.count+' saved message'+(verify.count===1?"":"s")+'</div><div class="warning-box">The app can detect changes to its saved messages. This does not mean automatic court admissibility.</div></section><section class="card span-8"><div class="card-head"><div><h3>Export evidence pack</h3><p>Messages and activity in one chronological PDF.</p></div></div><form id="export-form" class="form-stack"><div class="export-dates"><div class="field"><label>From</label><input name="start" type="date"></div><div class="field"><label>To</label><input name="end" type="date"></div></div><button class="primary-button" type="submit">Download PDF evidence pack</button></form></section><section class="card span-12"><div class="card-head"><div><h3>Evidence timeline</h3><p>Actions are automatically timestamped and cannot be edited through the app.</p></div></div>'+timelineHtml(items)+'</section></div>';
+  document.getElementById("page").innerHTML='<div class="page-grid"><section class="card span-4"><div class="card-head"><div><h3>Message records</h3><p>Checking saved messages for changes.</p></div></div><div class="metric-value" style="color:var(--success)">'+(verify.verified?"Checked":"Warning")+'</div><div class="metric-note">'+verify.count+' saved message'+(verify.count===1?"":"s")+'</div><div class="warning-box">The app can detect changes to its saved messages. This does not mean automatic court admissibility.</div></section><section class="card span-8"><div class="card-head"><div><h3>Export evidence pack</h3><p>Messages and activity in one chronological PDF.</p></div></div><form id="export-form" class="form-stack"><div class="export-dates"><div class="field"><label>From</label><input name="start" type="date"></div><div class="field"><label>To</label><input name="end" type="date"></div></div><button class="primary-button" type="submit">Download PDF evidence pack</button></form></section><section class="card span-12"><div class="card-head"><div><h3>Recent activity</h3><p>Actions are automatically timestamped and cannot be edited through the app.</p></div></div>'+timelineHtml(items)+'</section></div>';
   document.getElementById("export-form").onsubmit=function(e){e.preventDefault();var fd=new FormData(e.target),q=new URLSearchParams();if(fd.get("start"))q.set("start",fd.get("start"));if(fd.get("end"))q.set("end",fd.get("end"));window.location="/api/evidence.pdf?"+q.toString();};
 }
 
