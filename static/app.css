@@ -72,3 +72,53 @@ body:has(.calendar-wrap),body:has(#export-form){height:100dvh;overflow:hidden;ov
   .export-dates .field{width:100%;align-items:flex-start}
   .export-dates input{width:min(100%,205px)}
 }
+
+/* Keep fitted app pages locked even after opening and closing overlays. */
+body.app-page-locked{height:100dvh;overflow:hidden;overscroll-behavior:none}
+body.app-page-locked .app-shell{height:100dvh;min-height:0;overflow:hidden}
+body.app-page-locked .main-area{height:100dvh;overflow:hidden}
+body.app-page-locked .page{height:calc(100dvh - 82px);max-width:none;overscroll-behavior:contain;-webkit-overflow-scrolling:touch}
+body.view-messages .page{overflow:hidden}
+body.view-calendar .page,body.view-evidence .page{overflow-y:auto}
+
+/* The jump control sits centrally above the message composer. */
+.jump-latest{left:50%;right:auto;transform:translateX(-50%)}
+
+.quick-event-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px}
+.quick-event-heading h3{margin:0}
+.quick-event-heading p{margin:4px 0 0;color:var(--muted);font-size:11px}
+.quick-event-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+.quick-event-grid .field{min-width:0;gap:5px}
+.quick-event-grid input,.quick-event-grid select,.quick-event-grid textarea{width:100%;min-width:0;min-height:38px;padding:8px 9px;font-size:11px}
+.quick-event-grid textarea{min-height:54px;resize:vertical}
+.quick-event-grid label{font-size:10px}
+.quick-title,.quick-notes{grid-column:1/-1}
+.quick-repeat-until{grid-column:1/-1}
+.feature-request textarea{min-height:90px}
+#feature-request-count{text-align:right}
+
+@media(max-width:760px){
+  body.app-page-locked .app-shell{padding-bottom:0}
+  body.app-page-locked .page{height:calc(100dvh - 138px);padding:0}
+  .topbar{gap:8px}
+  .topbar>div:first-child{min-width:0}
+  .topbar h2{font-size:20px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .topbar-actions{gap:5px}
+  .topbar-actions .icon-button,
+  .topbar-actions #feature-request-button,
+  .topbar-actions #notification-button,
+  .topbar-actions #search-shortcut{display:grid;width:34px;height:34px;border-radius:10px}
+  .topbar-actions .icon-button svg{width:16px;height:16px}
+  .topbar-actions .avatar{width:36px;height:36px;border-radius:11px;font-size:13px}
+  .mobile-nav{grid-template-columns:repeat(7,minmax(0,1fr));column-gap:2px;padding-left:max(5px,env(safe-area-inset-left));padding-right:max(5px,env(safe-area-inset-right))}
+  .mobile-nav button{min-width:0;gap:2px;font-size:7px;letter-spacing:-.02em}
+  .mobile-nav button svg{width:16px;height:16px}
+  .mobile-nav button span:not(.unread-badge){max-width:100%;overflow:hidden;text-overflow:ellipsis}
+  .page:has(.calendar-wrap) .calendar-card{border-bottom:1px solid var(--line)}
+  .quick-event-card{padding:14px 16px 18px!important}
+  .quick-event-heading{margin-bottom:11px}
+  .quick-event-heading p{font-size:10px}
+  .quick-event-grid{gap:8px}
+  .quick-event-grid input[type="datetime-local"]{width:100%;font-size:10px;padding:7px 5px}
+  .quick-event-grid input,.quick-event-grid select,.quick-event-grid textarea{min-height:36px}
+}
