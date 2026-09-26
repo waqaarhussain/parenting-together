@@ -134,7 +134,7 @@ function recoveryModal(code, heading) {
 function unlockModal(envelope) {
   return new Promise(function(resolve,reject){
     document.body.classList.add("modal-required");
-    openModal('<h3>Unlock your family vault</h3><p>Enter the 16-group recovery phrase shown when this vault was created. It stays on this device.</p><form id="unlock-vault" class="form-stack"><div class="field"><label>Recovery phrase</label><textarea name="code" autocomplete="off" required placeholder="000 000 000 …"></textarea></div><button class="primary-button" type="submit">Unlock records</button></form>',function(){
+    openModal('<h3>Unlock your family vault</h3><p>This browser has not retained its device-only vault key. Enter your 16-group recovery phrase once to unlock it here.</p><p class="vault-unlock-note">Private Browsing may ask again after the private session ends. Normal Safari and the installed app remember their keys separately.</p><form id="unlock-vault" class="form-stack"><div class="field"><label>Recovery phrase</label><textarea name="code" autocomplete="off" required placeholder="000 000 000 …"></textarea></div><button class="primary-button" type="submit">Unlock records</button></form>',function(){
       document.getElementById("unlock-vault").onsubmit=async function(e){e.preventDefault();try{var code=new FormData(e.target).get("code");var vault=await PTVault.unlock(state.me.user.id,envelope,code);closeModal(true);resolve(vault);}catch(error){toast(error.message,"error");}};
     });
   });
