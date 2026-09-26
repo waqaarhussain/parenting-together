@@ -11,9 +11,11 @@ v2202603253680444276.megasrv.de {
     tls {
         issuer acme {
             dir https://acme.zerossl.com/v2/DV90
+            email waqaar06@hotmail.com
         }
         issuer acme {
             dir https://acme-v02.api.letsencrypt.org/directory
+            email waqaar06@hotmail.com
         }
     }
     header Strict-Transport-Security "max-age=31536000"
