@@ -6,7 +6,8 @@ import os
 import secrets
 import sqlite3
 import time
-from datetime import datetime, timezone
+import calendar as month_calendar
+from datetime import datetime, timedelta, timezone
 from functools import wraps
 from pathlib import Path
 
@@ -15,7 +16,7 @@ from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import mm
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
 from werkzeug.security import check_password_hash, generate_password_hash
 from werkzeug.utils import secure_filename
 
@@ -117,7 +118,13 @@ def init_db():
         start_at TEXT NOT NULL,
         end_at TEXT,
         notes TEXT,
+        reminder_minutes INTEGER NOT NULL DEFAULT 0,
+        recurrence TEXT NOT NULL DEFAULT 'none',
+        recurrence_until TEXT,
+        timezone_offset INTEGER NOT NULL DEFAULT 0,
+        cancelled_at TEXT,
         created_at TEXT NOT NULL,
+        updated_at TEXT,
         FOREIGN KEY(family_id) REFERENCES families(id) ON DELETE CASCADE,
         FOREIGN KEY(creator_id) REFERENCES users(id)
     );
@@ -189,6 +196,26 @@ def init_db():
         FOREIGN KEY(family_id) REFERENCES families(id) ON DELETE CASCADE,
         FOREIGN KEY(user_id) REFERENCES users(id)
     );
+    CREATE TABLE IF NOT EXISTS notifications (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        family_id INTEGER NOT NULL,
+        user_id INTEGER NOT NULL,
+        actor_id INTEGER,
+        notification_type TEXT NOT NULL,
+        title TEXT NOT NULL,
+        body TEXT,
+        target_type TEXT,
+        target_id INTEGER,
+        target_value TEXT,
+        dedupe_key TEXT,
+        created_at TEXT NOT NULL,
+        read_at TEXT,
+        FOREIGN KEY(family_id) REFERENCES families(id) ON DELETE CASCADE,
+        FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
+        FOREIGN KEY(actor_id) REFERENCES users(id),
+        UNIQUE(user_id, dedupe_key)
+    );
+    CREATE INDEX IF NOT EXISTS notifications_user_idx ON notifications(user_id, read_at, id);
     CREATE TRIGGER IF NOT EXISTS messages_no_update
     BEFORE UPDATE ON messages
     BEGIN
@@ -212,6 +239,19 @@ def init_db():
     """
     with db() as conn:
         conn.executescript(schema)
+        event_columns = {row["name"] for row in conn.execute("PRAGMA table_info(events)")}
+        migrations = {
+            "reminder_minutes": "INTEGER NOT NULL DEFAULT 0",
+            "recurrence": "TEXT NOT NULL DEFAULT 'none'",
+            "recurrence_until": "TEXT",
+            "timezone_offset": "INTEGER NOT NULL DEFAULT 0",
+            "cancelled_at": "TEXT",
+            "updated_at": "TEXT",
+        }
+        for name, definition in migrations.items():
+            if name not in event_columns:
+                conn.execute("ALTER TABLE events ADD COLUMN " + name + " " + definition)
+        conn.execute("UPDATE events SET updated_at=created_at WHERE updated_at IS NULL")
 
 
 init_db()
@@ -219,6 +259,60 @@ init_db()
 
 def rowdict(row):
     return dict(row) if row else None
+
+
+def parse_datetime(value):
+    if not value:
+        return None
+    return datetime.fromisoformat(str(value).replace("Z", "+00:00")).replace(tzinfo=None)
+
+
+def add_month(value, preferred_day=None):
+    month = value.month + 1
+    year = value.year + (month - 1) // 12
+    month = (month - 1) % 12 + 1
+    day = min(preferred_day or value.day, month_calendar.monthrange(year, month)[1])
+    return value.replace(year=year, month=month, day=day)
+
+
+def expand_event(row, range_start=None, range_end=None, limit=2000):
+    item = rowdict(row)
+    if item.get("cancelled_at"):
+        return []
+    start = parse_datetime(item["start_at"])
+    end = parse_datetime(item.get("end_at"))
+    duration = end - start if end else None
+    repeat = item.get("recurrence") or "none"
+    until = parse_datetime(item.get("recurrence_until"))
+    if item.get("recurrence_until") and len(str(item["recurrence_until"])) == 10:
+        until = until.replace(hour=23, minute=59, second=59)
+    if repeat == "none":
+        until = start
+    occurrences = []
+    current = start
+    for _ in range(limit):
+        if until and current > until:
+            break
+        if (range_start is None or current >= range_start) and (range_end is None or current <= range_end):
+            occurrence = dict(item)
+            occurrence["series_start_at"] = item["start_at"]
+            occurrence["series_end_at"] = item.get("end_at")
+            occurrence["start_at"] = current.isoformat(timespec="minutes")
+            occurrence["end_at"] = (current + duration).isoformat(timespec="minutes") if duration else None
+            occurrence["occurrence_key"] = str(item["id"]) + ":" + occurrence["start_at"]
+            occurrence["is_recurring"] = repeat != "none"
+            occurrences.append(occurrence)
+        if repeat == "daily":
+            current += timedelta(days=1)
+        elif repeat == "weekly":
+            current += timedelta(days=7)
+        elif repeat == "monthly":
+            current = add_month(current, start.day)
+        else:
+            break
+        if range_end and current > range_end:
+            break
+    return occurrences
 
 
 def csrf_token():
@@ -269,6 +363,90 @@ def audit_event(conn, fid, uid, event_type, entity_type, entity_id, summary, met
         "INSERT INTO audit(family_id,user_id,event_type,entity_type,entity_id,summary,metadata_json,created_at) VALUES(?,?,?,?,?,?,?,?)",
         (fid, uid, event_type, entity_type, entity_id, summary, json.dumps(metadata or {}), now_iso()),
     )
+
+
+def notify_family(conn, fid, actor_id, notification_type, title, body="", target_type=None,
+                  target_id=None, target_value=None, include_actor=False, dedupe_key=None):
+    members = conn.execute("SELECT user_id FROM family_members WHERE family_id=?", (fid,)).fetchall()
+    stamp = now_iso()
+    for member in members:
+        if not include_actor and member["user_id"] == actor_id:
+            continue
+        conn.execute(
+            """INSERT OR IGNORE INTO notifications(
+                   family_id,user_id,actor_id,notification_type,title,body,target_type,target_id,
+                   target_value,dedupe_key,created_at)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+            (fid, member["user_id"], actor_id, notification_type, title, body, target_type,
+             target_id, target_value, dedupe_key, stamp),
+        )
+
+
+def materialize_event_reminders(conn, fid, uid):
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    events = conn.execute(
+        """SELECT e.*,u.name creator_name FROM events e JOIN users u ON u.id=e.creator_id
+           WHERE e.family_id=? AND e.cancelled_at IS NULL AND e.reminder_minutes>0""",
+        (fid,),
+    ).fetchall()
+    for event in events:
+        reminder_minutes = max(0, min(int(event["reminder_minutes"] or 0), 10080))
+        for occurrence in expand_event(event, now - timedelta(days=8), now + timedelta(days=370)):
+            local_start = parse_datetime(occurrence["start_at"])
+            utc_start = local_start + timedelta(minutes=int(occurrence.get("timezone_offset") or 0))
+            remind_at = utc_start - timedelta(minutes=reminder_minutes)
+            if remind_at <= now < utc_start:
+                key = "event-reminder:" + occurrence["occurrence_key"]
+                conn.execute(
+                    """INSERT OR IGNORE INTO notifications(
+                           family_id,user_id,actor_id,notification_type,title,body,target_type,
+                           target_id,target_value,dedupe_key,created_at)
+                       VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+                    (fid, uid, event["creator_id"], "event_reminder", "Event reminder",
+                     event["title"] + " starts at " + occurrence["start_at"].replace("T", " "),
+                     "event", event["id"], occurrence["start_at"], key, now_iso()),
+                )
+                break
+
+
+@app.get("/api/notifications")
+@login_required
+def list_notifications():
+    fid = require_family()
+    uid = session["user_id"]
+    with db() as conn:
+        materialize_event_reminders(conn, fid, uid)
+        rows = conn.execute(
+            "SELECT * FROM notifications WHERE family_id=? AND user_id=? ORDER BY id DESC LIMIT 100",
+            (fid, uid),
+        ).fetchall()
+        unread = conn.execute(
+            "SELECT COUNT(*) FROM notifications WHERE family_id=? AND user_id=? AND read_at IS NULL",
+            (fid, uid),
+        ).fetchone()[0]
+    return jsonify({"unread": unread, "items": [rowdict(row) for row in rows]})
+
+
+@app.post("/api/notifications/read")
+@login_required
+@require_csrf
+def read_notifications():
+    data = request.get_json(silent=True) or {}
+    fid = require_family()
+    uid = session["user_id"]
+    stamp = now_iso()
+    with db() as conn:
+        if data.get("id"):
+            conn.execute(
+                "UPDATE notifications SET read_at=COALESCE(read_at,?) WHERE id=? AND family_id=? AND user_id=?",
+                (stamp, int(data["id"]), fid, uid),
+            )
+        else:
+            conn.execute(
+                "UPDATE notifications SET read_at=COALESCE(read_at,?) WHERE family_id=? AND user_id=?",
+                (stamp, fid, uid),
+            )
+    return jsonify({"ok": True})
 
 
 def unique_invite_code(conn):
@@ -410,6 +588,9 @@ def join_family():
             (target["id"], uid, "parent", now_iso()),
         )
         audit_event(conn, target["id"], uid, "joined", "family", target["id"], "Joined family space")
+        joining_user = conn.execute("SELECT name FROM users WHERE id=?", (uid,)).fetchone()
+        notify_family(conn, target["id"], uid, "family_joined", "Co-parent connected",
+                      joining_user["name"] + " joined your family space", "home", target["id"])
     return jsonify(me_payload(uid))
 
 
@@ -440,10 +621,46 @@ def list_messages():
     try:
         before = int(request.args["before"]) if "before" in request.args else None
         after = int(request.args["after"]) if "after" in request.args else None
+        around = int(request.args["around"]) if "around" in request.args else None
     except ValueError:
         return jsonify({"error": "Invalid message cursor."}), 400
-    if (before is not None and before <= 0) or (after is not None and after < 0) or (before is not None and after is not None):
+    cursors = sum(value is not None for value in (before, after, around))
+    if ((before is not None and before <= 0) or (after is not None and after < 0)
+            or (around is not None and around <= 0) or cursors > 1):
         return jsonify({"error": "Invalid message cursor."}), 400
+    message_select = """
+        SELECT m.*,u.name sender_name,
+               (SELECT MIN(read_at) FROM message_reads mr WHERE mr.message_id=m.id AND mr.user_id<>m.sender_id) read_at
+        FROM messages m JOIN users u ON u.id=m.sender_id
+    """
+    if around is not None:
+        with db() as conn:
+            if not conn.execute("SELECT 1 FROM messages WHERE id=? AND family_id=?", (around, fid)).fetchone():
+                return jsonify({"error": "Message not found."}), 404
+            older = conn.execute(
+                message_select + " WHERE m.family_id=? AND m.id<=? ORDER BY m.id DESC LIMIT 25",
+                (fid, around),
+            ).fetchall()
+            newer = conn.execute(
+                message_select + " WHERE m.family_id=? AND m.id>? ORDER BY m.id ASC LIMIT 25",
+                (fid, around),
+            ).fetchall()
+            rows = list(reversed(older)) + list(newer)
+            unread = [row["id"] for row in rows if row["sender_id"] != uid]
+            if unread:
+                stamp = now_iso()
+                conn.executemany(
+                    "INSERT OR IGNORE INTO message_reads(message_id,user_id,read_at) VALUES(?,?,?)",
+                    [(mid, uid, stamp) for mid in unread],
+                )
+            has_older = bool(rows and conn.execute(
+                "SELECT 1 FROM messages WHERE family_id=? AND id<? LIMIT 1", (fid, rows[0]["id"])
+            ).fetchone())
+            has_newer = bool(rows and conn.execute(
+                "SELECT 1 FROM messages WHERE family_id=? AND id>? LIMIT 1", (fid, rows[-1]["id"])
+            ).fetchone())
+        return jsonify({"messages": [rowdict(row) for row in rows], "has_older": has_older,
+                        "has_newer": has_newer, "target_id": around})
     where = "m.family_id=?"
     params = [fid]
     if before is not None:
@@ -455,12 +672,7 @@ def list_messages():
     order = "ASC" if after is not None else "DESC"
     with db() as conn:
         rows = conn.execute(
-            f"""
-            SELECT m.*,u.name sender_name,
-                   (SELECT MIN(read_at) FROM message_reads mr WHERE mr.message_id=m.id AND mr.user_id<>m.sender_id) read_at
-            FROM messages m JOIN users u ON u.id=m.sender_id
-            WHERE {where} ORDER BY m.id {order} LIMIT 50
-            """,
+            message_select + f" WHERE {where} ORDER BY m.id {order} LIMIT 50",
             params,
         ).fetchall()
         unread = [r["id"] for r in rows if r["sender_id"] != uid]
@@ -546,6 +758,9 @@ def send_message():
             (fid, uid, body, prev_hash, record_hash, created),
         )
         audit_event(conn, fid, uid, "sent", "message", cur.lastrowid, "Sent message", {"hash": record_hash})
+        sender = conn.execute("SELECT name FROM users WHERE id=?", (uid,)).fetchone()
+        notify_family(conn, fid, uid, "message", "New message from " + sender["name"], body,
+                      "message", cur.lastrowid, str(cur.lastrowid))
     return jsonify({"ok": True, "id": cur.lastrowid, "hash": record_hash}), 201
 
 
@@ -588,12 +803,58 @@ def rule_warnings(conn, fid, category, start_at):
 @login_required
 def events():
     fid = require_family()
+    range_start = parse_datetime(request.args.get("start"))
+    range_end = parse_datetime(request.args.get("end"))
+    if not range_start:
+        range_start = datetime.now().replace(tzinfo=None) - timedelta(days=365)
+    if not range_end:
+        range_end = datetime.now().replace(tzinfo=None) + timedelta(days=730)
     with db() as conn:
         rows = conn.execute(
-            "SELECT e.*,u.name creator_name FROM events e JOIN users u ON u.id=e.creator_id WHERE e.family_id=? ORDER BY e.start_at",
+            """SELECT e.*,u.name creator_name FROM events e JOIN users u ON u.id=e.creator_id
+               WHERE e.family_id=? AND e.cancelled_at IS NULL ORDER BY e.start_at""",
             (fid,),
         ).fetchall()
-    return jsonify([rowdict(x) for x in rows])
+    occurrences = []
+    for row in rows:
+        occurrences.extend(expand_event(row, range_start, range_end))
+    occurrences.sort(key=lambda item: item["start_at"])
+    return jsonify(occurrences[:1000])
+
+
+def validated_event(data):
+    title = str(data.get("title", "")).strip()
+    category = str(data.get("category", "general")).strip()
+    start_at = str(data.get("start_at", "")).strip()
+    end_at = str(data.get("end_at") or "").strip() or None
+    recurrence = str(data.get("recurrence", "none")).strip()
+    recurrence_until = str(data.get("recurrence_until") or "").strip() or None
+    if not title or not start_at:
+        raise ValueError("Title and start date are required.")
+    if recurrence not in {"none", "daily", "weekly", "monthly"}:
+        raise ValueError("Choose a valid repeat option.")
+    if recurrence != "none" and not recurrence_until:
+        raise ValueError("Choose when the repeating event should end.")
+    start = parse_datetime(start_at)
+    if end_at and parse_datetime(end_at) <= start:
+        raise ValueError("The end time must be after the start time.")
+    if recurrence_until and parse_datetime(recurrence_until) < start.replace(hour=0, minute=0, second=0):
+        raise ValueError("The repeat end date must be after the first event.")
+    try:
+        reminder = int(data.get("reminder_minutes") or 0)
+        offset = int(data.get("timezone_offset") or 0)
+    except (TypeError, ValueError):
+        raise ValueError("Enter a valid reminder time.")
+    if not 0 <= reminder <= 10080:
+        raise ValueError("Reminder must be between 0 minutes and 7 days.")
+    if not -840 <= offset <= 840:
+        offset = 0
+    return {
+        "title": title[:200], "category": category[:40], "start_at": start_at,
+        "end_at": end_at, "notes": str(data.get("notes", "")).strip()[:5000],
+        "reminder_minutes": reminder, "recurrence": recurrence,
+        "recurrence_until": recurrence_until, "timezone_offset": offset,
+    }
 
 
 @app.post("/api/events")
@@ -601,21 +862,82 @@ def events():
 @require_csrf
 def create_event():
     data = request.get_json(silent=True) or {}
-    title = data.get("title", "").strip()
-    start_at = data.get("start_at", "").strip()
-    category = data.get("category", "general").strip()
-    if not title or not start_at:
-        return jsonify({"error": "Title and start date are required."}), 400
+    try:
+        item = validated_event(data)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    fid = require_family()
+    uid = session["user_id"]
+    stamp = now_iso()
+    with db() as conn:
+        warnings = rule_warnings(conn, fid, item["category"], item["start_at"])
+        cur = conn.execute(
+            """INSERT INTO events(family_id,creator_id,title,category,start_at,end_at,notes,
+                   reminder_minutes,recurrence,recurrence_until,timezone_offset,created_at,updated_at)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (fid, uid, item["title"], item["category"], item["start_at"], item["end_at"],
+             item["notes"], item["reminder_minutes"], item["recurrence"],
+             item["recurrence_until"], item["timezone_offset"], stamp, stamp),
+        )
+        audit_event(conn, fid, uid, "created", "event", cur.lastrowid,
+                    "Calendar event added: " + item["title"], {"warnings": warnings, **item})
+        notify_family(conn, fid, uid, "event_created", "New calendar event", item["title"],
+                      "event", cur.lastrowid, item["start_at"])
+    return jsonify({"ok": True, "id": cur.lastrowid, "warnings": warnings}), 201
+
+
+@app.put("/api/events/<int:item_id>")
+@login_required
+@require_csrf
+def update_event(item_id):
+    data = request.get_json(silent=True) or {}
+    try:
+        updated = validated_event(data)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
     fid = require_family()
     uid = session["user_id"]
     with db() as conn:
-        warnings = rule_warnings(conn, fid, category, start_at)
-        cur = conn.execute(
-            "INSERT INTO events(family_id,creator_id,title,category,start_at,end_at,notes,created_at) VALUES(?,?,?,?,?,?,?,?)",
-            (fid, uid, title, category, start_at, data.get("end_at") or None, data.get("notes", "").strip(), now_iso()),
+        previous = conn.execute(
+            "SELECT * FROM events WHERE id=? AND family_id=? AND cancelled_at IS NULL", (item_id, fid)
+        ).fetchone()
+        if not previous:
+            return jsonify({"error": "Event not found."}), 404
+        warnings = rule_warnings(conn, fid, updated["category"], updated["start_at"])
+        conn.execute(
+            """UPDATE events SET title=?,category=?,start_at=?,end_at=?,notes=?,reminder_minutes=?,
+                   recurrence=?,recurrence_until=?,timezone_offset=?,updated_at=? WHERE id=? AND family_id=?""",
+            (updated["title"], updated["category"], updated["start_at"], updated["end_at"],
+             updated["notes"], updated["reminder_minutes"], updated["recurrence"],
+             updated["recurrence_until"], updated["timezone_offset"], now_iso(), item_id, fid),
         )
-        audit_event(conn, fid, uid, "created", "event", cur.lastrowid, "Calendar event: " + title, {"warnings": warnings})
-    return jsonify({"ok": True, "id": cur.lastrowid, "warnings": warnings}), 201
+        audit_event(conn, fid, uid, "updated", "event", item_id,
+                    "Calendar event updated: " + updated["title"],
+                    {"before": rowdict(previous), "after": updated, "warnings": warnings})
+        notify_family(conn, fid, uid, "event_updated", "Calendar event changed", updated["title"],
+                      "event", item_id, updated["start_at"])
+    return jsonify({"ok": True, "warnings": warnings})
+
+
+@app.delete("/api/events/<int:item_id>")
+@login_required
+@require_csrf
+def cancel_event(item_id):
+    fid = require_family()
+    uid = session["user_id"]
+    stamp = now_iso()
+    with db() as conn:
+        item = conn.execute(
+            "SELECT * FROM events WHERE id=? AND family_id=? AND cancelled_at IS NULL", (item_id, fid)
+        ).fetchone()
+        if not item:
+            return jsonify({"error": "Event not found."}), 404
+        conn.execute("UPDATE events SET cancelled_at=?,updated_at=? WHERE id=?", (stamp, stamp, item_id))
+        audit_event(conn, fid, uid, "cancelled", "event", item_id,
+                    "Calendar event cancelled: " + item["title"], {"event": rowdict(item)})
+        notify_family(conn, fid, uid, "event_cancelled", "Calendar event cancelled", item["title"],
+                      "activity", None, item["start_at"])
+    return jsonify({"ok": True})
 
 
 @app.get("/api/handovers")
@@ -648,6 +970,8 @@ def create_handover():
             (fid, uid, title, scheduled, data.get("location", "").strip(), stamp, stamp),
         )
         audit_event(conn, fid, uid, "requested", "handover", cur.lastrowid, "Handover requested: " + title)
+        notify_family(conn, fid, uid, "handover_requested", "New handover request", title,
+                      "handover", cur.lastrowid, scheduled)
     return jsonify({"ok": True, "id": cur.lastrowid}), 201
 
 
@@ -671,6 +995,8 @@ def respond_handover(item_id):
             (status, note, now_iso(), item_id),
         )
         audit_event(conn, fid, uid, status, "handover", item_id, "Handover " + status + ": " + item["title"], {"note": note})
+        notify_family(conn, fid, uid, "handover_response", "Handover " + status, item["title"],
+                      "handover", item_id, item["scheduled_at"])
     return jsonify({"ok": True})
 
 
@@ -687,6 +1013,8 @@ def complete_handover(item_id):
             return jsonify({"error": "Handover not found."}), 404
         conn.execute("UPDATE handovers SET status='completed',completed_at=?,updated_at=? WHERE id=?", (stamp, stamp, item_id))
         audit_event(conn, fid, uid, "completed", "handover", item_id, "Handover completed: " + item["title"], {"completed_at": stamp})
+        notify_family(conn, fid, uid, "handover_completed", "Handover completed", item["title"],
+                      "handover", item_id, item["scheduled_at"])
     return jsonify({"ok": True, "completed_at": stamp})
 
 
@@ -719,6 +1047,8 @@ def create_decision():
             (fid, uid, title, data.get("details", "").strip(), data.get("deadline") or None, stamp, stamp),
         )
         audit_event(conn, fid, uid, "requested", "decision", cur.lastrowid, "Decision requested: " + title)
+        notify_family(conn, fid, uid, "decision_requested", "New decision request", title,
+                      "decision", cur.lastrowid, data.get("deadline") or "")
     return jsonify({"ok": True, "id": cur.lastrowid}), 201
 
 
@@ -739,6 +1069,8 @@ def respond_decision(item_id):
         note = data.get("response_note", "").strip()
         conn.execute("UPDATE decisions SET status=?,response_note=?,updated_at=? WHERE id=?", (status, note, now_iso(), item_id))
         audit_event(conn, fid, uid, status, "decision", item_id, "Decision " + status + ": " + item["title"], {"note": note})
+        notify_family(conn, fid, uid, "decision_response", "Decision " + status, item["title"],
+                      "decision", item_id, item["deadline"] or "")
     return jsonify({"ok": True})
 
 
@@ -787,6 +1119,9 @@ def create_expense():
             (fid, uid, title, amount_pence, split_percent, request.form.get("due_date") or None, receipt_path, stamp, stamp),
         )
         audit_event(conn, fid, uid, "requested", "expense", cur.lastrowid, "Expense requested: " + title, {"amount_pence": amount_pence, "split_percent": split_percent})
+        notify_family(conn, fid, uid, "expense_requested", "New expense request",
+                      title + " · £" + format(amount_pence / 100, ".2f"), "expense", cur.lastrowid,
+                      request.form.get("due_date") or "")
     return jsonify({"ok": True, "id": cur.lastrowid}), 201
 
 
@@ -806,6 +1141,8 @@ def respond_expense(item_id):
             return jsonify({"error": "Expense not found."}), 404
         conn.execute("UPDATE expenses SET status=?,updated_at=? WHERE id=?", (status, now_iso(), item_id))
         audit_event(conn, fid, uid, status, "expense", item_id, "Expense " + status + ": " + item["title"])
+        notify_family(conn, fid, uid, "expense_response", "Expense " + status, item["title"],
+                      "expense", item_id, item["due_date"] or "")
     return jsonify({"ok": True})
 
 
@@ -916,8 +1253,8 @@ def search_all():
             ("message", "m", "FROM messages m JOIN users u ON u.id=m.sender_id",
              "m.id,m.body title,m.created_at,('From '||u.name||' · '||m.created_at) detail",
              ["m.body", "m.created_at", "m.record_hash", "u.name", "u.email", "(SELECT GROUP_CONCAT(read_at,' ') FROM message_reads WHERE message_id=m.id)"]),
-            ("event", "e", "FROM events e JOIN users u ON u.id=e.creator_id",
-             "e.id,e.title,e.created_at,(e.category||' · '||e.start_at||' · '||COALESCE(e.notes,'')) detail",
+            ("event", "e", "FROM (SELECT * FROM events WHERE cancelled_at IS NULL) e JOIN users u ON u.id=e.creator_id",
+             "e.id,e.title,e.created_at,(e.category||' · '||e.start_at||' · '||COALESCE(e.notes,'')) detail,e.start_at target_at",
              ["e.title", "e.category", "e.start_at", "e.end_at", "e.notes", "e.created_at", "u.name", "u.email"]),
             ("handover", "h", "FROM handovers h JOIN users u ON u.id=h.creator_id",
              "h.id,h.title,h.created_at,(h.status||' · '||h.scheduled_at||' · '||COALESCE(h.location,'')||' · '||COALESCE(h.response_note,'')) detail",
@@ -960,16 +1297,6 @@ def evidence_pdf():
         family = conn.execute("SELECT * FROM families WHERE id=?", (fid,)).fetchone()
         members = conn.execute("SELECT u.name,u.email FROM family_members fm JOIN users u ON u.id=fm.user_id WHERE fm.family_id=?", (fid,)).fetchall()
         children = conn.execute("SELECT name,birthday FROM children WHERE family_id=? ORDER BY name", (fid,)).fetchall()
-        sql = "SELECT a.*,u.name actor_name FROM audit a LEFT JOIN users u ON u.id=a.user_id WHERE a.family_id=?"
-        params = [fid]
-        if start:
-            sql += " AND a.created_at>=?"
-            params.append(start)
-        if end:
-            sql += " AND a.created_at<=?"
-            params.append(end + "T23:59:59")
-        sql += " ORDER BY a.id ASC"
-        audits = conn.execute(sql, params).fetchall()
         message_sql = "SELECT m.*,u.name sender_name FROM messages m JOIN users u ON u.id=m.sender_id WHERE m.family_id=?"
         message_params = [fid]
         if start:
@@ -985,7 +1312,7 @@ def evidence_pdf():
     styles = getSampleStyleSheet()
     styles.add(ParagraphStyle(name="SmallMuted", parent=styles["BodyText"], fontSize=8, textColor=colors.HexColor("#64748b"), leading=10))
     story = [
-        Paragraph("Parenting Together evidence pack", styles["Title"]),
+        Paragraph("Parenting Together messages", styles["Title"]),
         Paragraph("Generated " + now_iso(), styles["SmallMuted"]),
         Spacer(1, 6*mm),
         Paragraph("Family", styles["Heading2"]),
@@ -996,26 +1323,8 @@ def evidence_pdf():
         Paragraph("Record integrity", styles["Heading2"]),
         Paragraph("Sent messages cannot be edited or deleted through the app. A SHA-256 hash chain helps detect changes to saved messages. This export does not mean automatic court admissibility.", styles["BodyText"]),
         Spacer(1, 5*mm),
-        Paragraph("Chronological activity", styles["Heading2"]),
+        Paragraph("Messages", styles["Heading2"]),
     ]
-    data = [["Time", "Actor", "Type", "Record"]]
-    for a in audits:
-        data.append([a["created_at"][:19].replace("T", " "), a["actor_name"] or "System", a["entity_type"], a["summary"].replace("immutable", "saved")])
-    table = Table(data, colWidths=[38*mm, 32*mm, 24*mm, 82*mm], repeatRows=1)
-    table.setStyle(TableStyle([
-        ("BACKGROUND", (0,0), (-1,0), colors.HexColor("#111827")),
-        ("TEXTCOLOR", (0,0), (-1,0), colors.white),
-        ("FONTNAME", (0,0), (-1,0), "Helvetica-Bold"),
-        ("FONTSIZE", (0,0), (-1,-1), 7),
-        ("VALIGN", (0,0), (-1,-1), "TOP"),
-        ("GRID", (0,0), (-1,-1), 0.25, colors.HexColor("#cbd5e1")),
-        ("ROWBACKGROUNDS", (0,1), (-1,-1), [colors.white, colors.HexColor("#f8fafc")]),
-        ("LEFTPADDING", (0,0), (-1,-1), 4),
-        ("RIGHTPADDING", (0,0), (-1,-1), 4),
-        ("TOPPADDING", (0,0), (-1,-1), 4),
-        ("BOTTOMPADDING", (0,0), (-1,-1), 4),
-    ]))
-    story.extend([table, PageBreak(), Paragraph("Message record", styles["Heading2"])])
     for m in messages:
         story.append(Paragraph(html.escape(m["sender_name"] + " · " + m["created_at"][:19].replace("T", " ")), styles["SmallMuted"]))
         story.append(Paragraph(html.escape(m["body"]), styles["BodyText"]))
@@ -1023,7 +1332,7 @@ def evidence_pdf():
         story.append(Spacer(1, 4*mm))
     doc.build(story)
     buffer.seek(0)
-    return send_file(buffer, mimetype="application/pdf", as_attachment=True, download_name="parenting-together-evidence.pdf")
+    return send_file(buffer, mimetype="application/pdf", as_attachment=True, download_name="parenting-together-messages.pdf")
 
 
 @app.errorhandler(413)
