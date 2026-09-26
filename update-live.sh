@@ -44,6 +44,16 @@ if ! caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile; then
   exit 1
 fi
 
+# A public CA failure may leave Caddy serving an untrusted Let's Encrypt
+# staging certificate. Preserve that disposable certificate outside Caddy's
+# active certificate tree so the next restart requests a trusted certificate.
+STAGING_CERT_DIR="/var/lib/caddy/.local/share/caddy/certificates/acme-staging-v02.api.letsencrypt.org-directory/v2202603253680444276.megasrv.de"
+if [ -d "$STAGING_CERT_DIR" ]; then
+  STAGING_BACKUP_DIR="/var/lib/caddy/staging-certificate-backups"
+  install -d -m 700 -o caddy -g caddy "$STAGING_BACKUP_DIR"
+  mv "$STAGING_CERT_DIR" "$STAGING_BACKUP_DIR/v2202603253680444276.megasrv.de-$(date -u +%Y%m%dT%H%M%SZ)"
+fi
+
 systemctl daemon-reload
 systemctl restart parenting-together
 systemctl stop nginx >/dev/null 2>&1 || true
