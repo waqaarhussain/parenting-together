@@ -28,6 +28,8 @@ mkdir -p "$DATA_DIR/uploads"
 python3 -m venv "$APP_DIR/.venv"
 "$APP_DIR/.venv/bin/pip" install --upgrade pip wheel
 "$APP_DIR/.venv/bin/pip" install -r "$APP_DIR/requirements.txt"
+git -C "$APP_DIR" -c safe.directory="$APP_DIR" rev-parse HEAD > "$APP_DIR/.deploy-version"
+chmod 644 "$APP_DIR/.deploy-version"
 
 if [ ! -f "$ENV_FILE" ]; then
   SECRET="$(openssl rand -hex 32)"

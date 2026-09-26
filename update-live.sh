@@ -18,6 +18,8 @@ git -c safe.directory="$APP_DIR" fetch origin main
 git -c safe.directory="$APP_DIR" reset --hard origin/main
 
 "$APP_DIR/.venv/bin/pip" install --disable-pip-version-check -q -r requirements.txt
+git -c safe.directory="$APP_DIR" rev-parse HEAD > "$APP_DIR/.deploy-version"
+chmod 644 "$APP_DIR/.deploy-version"
 chown -R root:root "$APP_DIR"
 
 install -m 644 deploy/parenting-together.service /etc/systemd/system/parenting-together.service

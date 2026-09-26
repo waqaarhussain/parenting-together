@@ -28,6 +28,31 @@ app.config["MAX_CONTENT_LENGTH"] = int(os.environ.get("MAX_UPLOAD_MB", "10")) * 
 app.config["SESSION_COOKIE_HTTPONLY"] = True
 app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 
+
+def deployed_version():
+    configured = os.environ.get("APP_VERSION", "").strip()
+    if configured:
+        return configured
+    root = Path(__file__).resolve().parent
+    candidates = [root / ".deploy-version", root / ".git" / "refs" / "remotes" / "origin" / "main"]
+    try:
+        head = (root / ".git" / "HEAD").read_text().strip()
+        if head.startswith("ref: "):
+            candidates.append(root / ".git" / head[5:])
+    except OSError:
+        pass
+    for candidate in candidates:
+        try:
+            value = candidate.read_text().strip()
+            if value:
+                return value[:40]
+        except OSError:
+            continue
+    return str(Path(__file__).stat().st_mtime_ns)
+
+
+app.config["APP_VERSION"] = deployed_version()
+
 ALLOWED_EXTENSIONS = {"png", "jpg", "jpeg", "webp", "pdf"}
 
 Path(app.config["DATABASE_PATH"]).parent.mkdir(parents=True, exist_ok=True)
@@ -482,7 +507,16 @@ def me_payload(uid):
 
 @app.get("/")
 def index():
-    return render_template("index.html")
+    response = app.make_response(render_template("index.html", app_version=app.config["APP_VERSION"]))
+    response.headers["Cache-Control"] = "no-store, max-age=0"
+    return response
+
+
+@app.get("/api/version")
+def api_version():
+    response = jsonify({"version": app.config["APP_VERSION"]})
+    response.headers["Cache-Control"] = "no-store, max-age=0"
+    return response
 
 
 @app.get("/health")

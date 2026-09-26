@@ -9,7 +9,7 @@
   <title>Parenting Together</title>
   <link rel="manifest" href="/static/manifest.webmanifest">
   <link rel="icon" href="/static/icon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="/static/app.css">
+  <link rel="stylesheet" href="/static/app.css?v={{ app_version }}">
 </head>
 <body>
   <div id="auth-view" class="auth-shell">
@@ -75,6 +75,7 @@
 
   <div id="modal" class="modal-backdrop hidden"><div class="modal-card"><button id="modal-close" class="modal-close">×</button><div id="modal-content"></div></div></div>
   <div id="toast" class="toast hidden"></div>
-  <script src="/static/app.js"></script>
+  <script>window.PT_APP_VERSION = {{ app_version|tojson }};</script>
+  <script src="/static/app.js?v={{ app_version }}"></script>
 </body>
 </html>
