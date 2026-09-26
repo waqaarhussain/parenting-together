@@ -167,6 +167,9 @@ class TwoParentFlow(unittest.TestCase):
         self.assertEqual(joined["unread"], 1)
         self.assertEqual(joined["items"][0]["notification_type"], "family_joined")
         self.assertEqual(self.post(self.first, a["csrf"], "/api/notifications/read", {}).status_code, 200)
+        cleared = self.first.get("/api/notifications").json
+        self.assertEqual(cleared["unread"], 0)
+        self.assertEqual(cleared["items"], [])
 
         self.assertEqual(self.post(self.first, a["csrf"], "/api/messages", {"body": "Bring the school bag"}).status_code, 201)
         message_notice = self.second.get("/api/notifications").json
@@ -180,6 +183,10 @@ class TwoParentFlow(unittest.TestCase):
         created = self.post(self.first, a["csrf"], "/api/events", payload)
         self.assertEqual(created.status_code, 201, created.get_data(as_text=True))
         event_id = created.json["id"]
+
+        no_end_payload = dict(payload, title="Weekly club", recurrence="weekly", recurrence_until="")
+        no_end = self.post(self.first, a["csrf"], "/api/events", no_end_payload)
+        self.assertEqual(no_end.status_code, 201, no_end.get_data(as_text=True))
 
         event_rows = self.second.get(
             "/api/events?start=" + starts.date().isoformat() + "&end=" + (starts + timedelta(days=3)).isoformat()
