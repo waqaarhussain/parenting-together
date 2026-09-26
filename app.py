@@ -861,8 +861,10 @@ def timeline():
     with db() as conn:
         rows = conn.execute(
             """
-            SELECT a.*,u.name actor_name
-            FROM audit a LEFT JOIN users u ON u.id=a.user_id
+            SELECT a.*,u.name actor_name,m.body detail
+            FROM audit a
+            LEFT JOIN users u ON u.id=a.user_id
+            LEFT JOIN messages m ON a.entity_type='message' AND m.id=a.entity_id AND m.family_id=a.family_id
             WHERE a.family_id=?
             ORDER BY a.id DESC LIMIT ?
             """,
