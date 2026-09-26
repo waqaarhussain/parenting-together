@@ -123,8 +123,8 @@ async function decryptTree(value) {
 function recoveryModal(code, heading) {
   return new Promise(function(resolve){
     document.body.classList.add("modal-required");
-    openModal('<div class="recovery-panel"><p class="eyebrow">PRIVATE FAMILY VAULT</p><h3>'+esc(heading||"Save your recovery code")+'</h3><p>This is the only way to restore your family records on a new device. We cannot see or recover it.</p><div class="recovery-code">'+esc(code)+'</div><button class="soft-button wide" id="copy-recovery" type="button">Copy recovery code</button><label class="recovery-confirm"><input id="recovery-saved" type="checkbox"> I saved it somewhere private</label><button class="primary-button wide" id="recovery-done" type="button" disabled>Continue</button></div>',function(){
-      document.getElementById("copy-recovery").onclick=function(){navigator.clipboard.writeText(code);toast("Recovery code copied","success");};
+    openModal('<div class="recovery-panel"><p class="eyebrow">PRIVATE FAMILY VAULT</p><h3>'+esc(heading||"Save your recovery phrase")+'</h3><p><strong>Store this recovery phrase somewhere private and safe.</strong> Because your family data is end-to-end encrypted, nobody, including us, can restore your messages, events, rules or handovers without it if you lose or replace this device.</p><div class="recovery-code">'+esc(code)+'</div><button class="soft-button wide" id="copy-recovery" type="button">Copy recovery phrase</button><label class="recovery-confirm"><input id="recovery-saved" type="checkbox"> I have stored it somewhere safe</label><button class="primary-button wide" id="recovery-done" type="button" disabled>Continue</button></div>',function(){
+      document.getElementById("copy-recovery").onclick=function(){navigator.clipboard.writeText(code);toast("Recovery phrase copied","success");};
       document.getElementById("recovery-saved").onchange=function(){document.getElementById("recovery-done").disabled=!this.checked;};
       document.getElementById("recovery-done").onclick=function(){closeModal(true);resolve();};
     });
@@ -134,7 +134,7 @@ function recoveryModal(code, heading) {
 function unlockModal(envelope) {
   return new Promise(function(resolve,reject){
     document.body.classList.add("modal-required");
-    openModal('<h3>Unlock your family vault</h3><p>Enter the 16-group recovery code shown when this vault was created. It stays on this device.</p><form id="unlock-vault" class="form-stack"><div class="field"><label>Recovery code</label><textarea name="code" autocomplete="off" required placeholder="000 000 000 …"></textarea></div><button class="primary-button" type="submit">Unlock records</button></form>',function(){
+    openModal('<h3>Unlock your family vault</h3><p>Enter the 16-group recovery phrase shown when this vault was created. It stays on this device.</p><form id="unlock-vault" class="form-stack"><div class="field"><label>Recovery phrase</label><textarea name="code" autocomplete="off" required placeholder="000 000 000 …"></textarea></div><button class="primary-button" type="submit">Unlock records</button></form>',function(){
       document.getElementById("unlock-vault").onsubmit=async function(e){e.preventDefault();try{var code=new FormData(e.target).get("code");var vault=await PTVault.unlock(state.me.user.id,envelope,code);closeModal(true);resolve(vault);}catch(error){toast(error.message,"error");}};
     });
   });
@@ -161,30 +161,20 @@ async function encryptLegacyReceipts() {
 
 async function ensureVault() {
   if(!window.crypto||!crypto.subtle)throw new Error("A secure HTTPS connection is required to unlock encrypted records.");
-  var invitation=inviteFromHash();
-  if(invitation){await acceptSecureInvite(invitation);return;}
   if(state.me.vault_envelope){
     state.vault=await PTVault.load(state.me.user.id);
     if(!state.vault)state.vault=await unlockModal(state.me.vault_envelope);
     await encryptLegacyReceipts();
     return;
   }
-  if(state.me.family_vault_ready)throw new Error("This family is already encrypted. Open a fresh secure invite from the connected parent to unlock it on this account.");
+  if(state.me.family_vault_ready)throw new Error("This family is already encrypted. Enter a fresh secure invite code from the connected parent.");
   var created=await PTVault.create();state.vault=created.vault;
   var legacy=await api("/api/vault/legacy");
   var records=await encryptLegacy(legacy);
   await api("/api/vault/setup",{method:"POST",json:{envelope:created.envelope,records:records}});
   await PTVault.remember(state.me.user.id,state.vault);state.me.vault_envelope=created.envelope;state.me.family_vault_ready=true;
-  await recoveryModal(created.code,"Save your recovery code");
+  await recoveryModal(created.code,"Save your recovery phrase");
   await encryptLegacyReceipts();
-}
-
-function inviteFromHash(){var params=new URLSearchParams(location.hash.slice(1));var code=params.get("join"),key=params.get("key");return code&&key?{code:code,key:key}:null;}
-async function acceptSecureInvite(invitation){
-  var accepted=await PTVault.acceptShared(state.me.user.id,invitation.key);state.vault=accepted.vault;
-  state.me=await api("/api/family/join",{method:"POST",json:{invite_code:invitation.code,envelope:accepted.envelope}});
-  state.me.vault_envelope=accepted.envelope;history.replaceState(null,"",location.pathname+location.search);
-  await recoveryModal(accepted.code,"Save your new recovery code");
 }
 
 function toast(msg, type) {
@@ -428,7 +418,7 @@ async function renderHome() {
   var connected = state.me.members.length > 1;
   document.getElementById("page").innerHTML =
     '<div class="page-grid">'+
-      '<section class="card welcome-card span-8"><p class="eyebrow">YOUR FAMILY SPACE</p><h3>Hi '+esc(state.me.user.name.split(" ")[0])+'.</h3><p>'+ (connected ? 'Everything shared between both parents stays organised, timestamped and easy to find.' : 'You are in solo mode. Start organising now, then connect the other parent whenever you are ready.') +'</p><div class="quick-actions"><button class="quick-action" id="qa-invite">'+(connected?'Family code':'Connect co-parent')+'</button><button class="quick-action" id="qa-child">Add child</button></div></section>'+
+      '<section class="card welcome-card span-8"><p class="eyebrow">YOUR FAMILY SPACE</p><h3>Hi '+esc(state.me.user.name.split(" ")[0])+'.</h3><p>'+ (connected ? 'Everything shared between both parents stays organised, timestamped and easy to find.' : 'You are in solo mode. Start organising now, then connect the other parent whenever you are ready.') +'</p><div class="quick-actions"><button class="quick-action" id="qa-invite">'+(connected?'Parents connected':'Connect co-parent')+'</button><button class="quick-action" id="qa-child">Add child</button></div></section>'+
       '<section class="metric-card span-4"><div class="metric-label">Open items</div><div class="metric-value">'+pending+'</div><div class="metric-note">Handovers, decisions and expenses awaiting action.</div></section>'+
       '<section class="metric-card span-6"><div class="metric-label">Children</div><div class="metric-value">'+state.me.children.length+'</div><div class="metric-note">'+(state.me.children.length?state.me.children.map(function(c){return esc(c.name);}).join(" · "):"Add profiles to personalise the family space.")+'</div></section>'+
       '<section class="metric-card span-6"><div class="metric-label">Upcoming plans</div><div class="metric-value">'+upcoming.length+(d.events.filter(function(x){return isFutureEvent(x.start_at);}).length>8?"+":"")+'</div><div class="metric-note">Events that have not started yet.</div></section>'+
@@ -448,18 +438,18 @@ function listEvents(items) {
 }
 function bindEventLinks(){document.querySelectorAll("[data-event-open]").forEach(function(button){button.onclick=function(){var id=Number(button.dataset.eventOpen),start=button.dataset.eventStart;if(state.page==="calendar"){var event=state.calendarEvents.find(function(item){return item.id===id&&item.start_at===start;})||state.calendarEvents.find(function(item){return item.id===id;});if(event)openEventModal(event);}else openRecordTarget("event",id,start);};});}
 
-function drawInviteQr(canvas,value){
-  var qr=new PTQRCode(-1,1);qr.addData(value);qr.make();var count=qr.getModuleCount(),quiet=4,size=232,scale=Math.floor(size/(count+quiet*2)),actual=scale*(count+quiet*2),ctx=canvas.getContext("2d");canvas.width=actual;canvas.height=actual;ctx.fillStyle="#fff";ctx.fillRect(0,0,actual,actual);ctx.fillStyle="#080b12";for(var row=0;row<count;row++)for(var col=0;col<count;col++)if(qr.isDark(row,col))ctx.fillRect((col+quiet)*scale,(row+quiet)*scale,scale,scale);
-}
-
-function openInviteModal() {
+async function openInviteModal() {
   var connected = state.me.members.length>1;
-  var secureLink=location.origin+location.pathname+'#join='+encodeURIComponent(state.me.family.invite_code)+'&key='+encodeURIComponent(state.vault.export());
-  openModal('<h3>'+(connected?'Secure family connection':'Connect your co-parent')+'</h3><p>Scan this QR code or send the secure link privately. The encryption key stays after the # sign, so it is never sent to this server. No approval step is required.</p><div class="secure-invite"><canvas id="invite-qr" aria-label="Secure family invite QR code"></canvas><strong>End-to-end encrypted invite</strong><small>Single family space · maximum two parents</small></div><button class="primary-button wide" id="share-invite">Share secure invite</button><button class="soft-button wide" id="copy-invite">Copy secure link</button>', function(){
-    drawInviteQr(document.getElementById("invite-qr"),secureLink);
-    document.getElementById("copy-invite").onclick=function(){navigator.clipboard.writeText(secureLink);toast("Secure invite copied","success");};
-    document.getElementById("share-invite").onclick=async function(){if(navigator.share){try{await navigator.share({title:"Parenting Together invite",text:"Open this private invite to join our family space.",url:secureLink});}catch(_){}}else{await navigator.clipboard.writeText(secureLink);toast("Secure invite copied","success");}};
-  });
+  if(connected){openModal('<h3>Parents connected</h3><p>'+state.me.members.map(function(member){return esc(member.name);}).join(' and ')+' are connected to this encrypted family space.</p>');return;}
+  openModal('<h3>Connect your co-parent</h3><p>Creating a single-use encrypted invite code…</p>');
+  try{
+    var invitation=await PTVault.createInvite(state.vault);
+    await api('/api/family/invite',{method:'POST',json:{lookup:invitation.lookup,payload:invitation.payload}});
+    document.getElementById('modal-content').innerHTML='<h3>Connect your co-parent</h3><p>Send this complete code privately. It expires after seven days and stops working as soon as it is used.</p><div class="secure-invite"><strong class="secure-invite-code">'+esc(invitation.code)+'</strong><small>Single use · end-to-end encrypted · no approval required</small></div><button class="primary-button wide" id="share-invite">Share invite code</button><button class="soft-button wide" id="copy-invite">Copy invite code</button><div class="invite-divider"><span>or enter a code you received</span></div><form id="join-family-form" class="form-stack"><div class="field"><label>Secure invite code</label><input name="code" class="invite-entry" autocomplete="off" autocapitalize="characters" spellcheck="false" required placeholder="ABCD-EFGH-JKLM-NPQR-STUV-WXYZ"></div><button class="primary-button" type="submit">Join family space</button></form>';
+    document.getElementById('copy-invite').onclick=function(){navigator.clipboard.writeText(invitation.code);toast('Invite code copied','success');};
+    document.getElementById('share-invite').onclick=async function(){var text='Parenting Together secure invite code: '+invitation.code;if(navigator.share){try{await navigator.share({title:'Parenting Together invite',text:text});}catch(_){}}else{await navigator.clipboard.writeText(invitation.code);toast('Invite code copied','success');}};
+    document.getElementById('join-family-form').onsubmit=async function(e){e.preventDefault();var button=e.target.querySelector('button[type="submit"]'),code=new FormData(e.target).get('code');button.disabled=true;button.textContent='Joining…';try{var lookup=await PTVault.inviteLookup(code);var resolved=await api('/api/family/invite/resolve',{method:'POST',json:{lookup:lookup}});var accepted=await PTVault.acceptInvite(code,resolved.payload);var joined=await api('/api/family/join',{method:'POST',json:{invite_lookup:lookup,envelope:accepted.envelope}});await PTVault.remember(joined.user.id,accepted.vault);state.vault=accepted.vault;state.me=joined;closeModal(true);await recoveryModal(accepted.code,'Save your new family recovery phrase');state.me=await api('/api/me');showApp();render();toast('Co-parent family space connected','success');}catch(error){button.disabled=false;button.textContent='Join family space';toast(error.message,'error');}};
+  }catch(error){closeModal();toast(error.message,'error');}
 }
 
 function openChildModal() {
@@ -810,6 +800,6 @@ document.getElementById("search-shortcut").onclick=function(){navigate("search")
 document.getElementById("notification-button").insertAdjacentHTML("afterbegin",icons.bell);
 document.getElementById("notification-button").onclick=openNotifications;
 document.getElementById("login-form").onsubmit=async function(e){e.preventDefault();var fd=new FormData(e.target);try{state.me=await api("/api/auth/login",{method:"POST",json:{identifier:fd.get("identifier"),password:fd.get("password")}});await ensureVault();state.me=await api("/api/me");showApp();render();}catch(err){toast(err.message,"error");}};
-document.getElementById("register-form").onsubmit=async function(e){e.preventDefault();var fd=new FormData(e.target);try{var created=await PTVault.create();state.me=await api("/api/auth/register",{method:"POST",json:{name:fd.get("name"),username:fd.get("username"),email:fd.get("email"),password:fd.get("password"),vault_envelope:created.envelope}});state.vault=created.vault;await PTVault.remember(state.me.user.id,state.vault);await recoveryModal(created.code,"Save your recovery code");showApp();render();toast("Your encrypted family space is ready","success");}catch(err){toast(err.message,"error");}};
+document.getElementById("register-form").onsubmit=async function(e){e.preventDefault();var fd=new FormData(e.target);try{var created=await PTVault.create();state.me=await api("/api/auth/register",{method:"POST",json:{name:fd.get("name"),username:fd.get("username"),email:fd.get("email"),password:fd.get("password"),vault_envelope:created.envelope}});state.vault=created.vault;await PTVault.remember(state.me.user.id,state.vault);await recoveryModal(created.code,"Save your recovery phrase");showApp();render();toast("Your encrypted family space is ready","success");}catch(err){toast(err.message,"error");}};
 document.getElementById("logout-button").onclick=async function(){try{await api("/api/auth/logout",{method:"POST",json:{}});}catch(e){}location.reload();};
 bootstrap();
