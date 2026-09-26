@@ -91,7 +91,10 @@ class TwoParentFlow(unittest.TestCase):
         self.assertIn("rule", {item["type"] for item in self.second.get("/api/search?q=holiday_notice_days").json})
         self.assertIn("activity", {item["type"] for item in self.second.get("/api/search?q=calendar%20event").json})
         self.assertIn("decision", {item["type"] for item in self.second.get("/api/search?q=Wednesday").json})
-        self.assertTrue(self.first.get("/api/timeline").json)
+        timeline = self.first.get("/api/timeline").json
+        self.assertTrue(timeline)
+        message_activity = next(item for item in timeline if item["entity_type"] == "message")
+        self.assertEqual(message_activity["detail"], "School pickup Tuesday")
         pdf = self.second.get("/api/evidence.pdf")
         self.assertEqual(pdf.status_code, 200, pdf.get_data(as_text=True)[:300] if pdf.status_code != 200 else "")
         self.assertTrue(pdf.data.startswith(b"%PDF"))
