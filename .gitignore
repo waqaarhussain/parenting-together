@@ -3,6 +3,7 @@ __pycache__/
 .venv/
 .test-venv/
 .env
+.deploy-version
 *.db
 uploads/
 .DS_Store
