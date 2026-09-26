@@ -105,9 +105,13 @@ function toast(msg, type) {
 function openModal(html, onReady) {
   document.getElementById("modal-content").innerHTML = html;
   document.getElementById("modal").classList.remove("hidden");
+  document.body.classList.add("modal-open");
   if (onReady) onReady();
 }
-function closeModal() { document.getElementById("modal").classList.add("hidden"); }
+function closeModal() {
+  document.getElementById("modal").classList.add("hidden");
+  document.body.classList.remove("modal-open");
+}
 
 function setAuthTab(tab) {
   document.querySelectorAll(".auth-tab").forEach(function(b){ b.classList.toggle("active", b.dataset.authTab === tab); });
