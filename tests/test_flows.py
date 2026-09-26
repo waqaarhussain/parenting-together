@@ -66,6 +66,13 @@ class TwoParentFlow(unittest.TestCase):
         child = self.post(self.first, a["csrf"], "/api/children", {"name": "Alex"})
         self.assertEqual(child.status_code, 201, child.get_data(as_text=True))
         self.assertEqual(self.second.get("/api/me").json["children"][0]["name"], "Alex")
+        feature = self.post(self.first, a["csrf"], "/api/feature-requests", {"body": "Add colour labels"})
+        self.assertEqual(feature.status_code, 201, feature.get_data(as_text=True))
+        self.assertEqual(self.post(self.first, a["csrf"], "/api/feature-requests", {"body": "x" * 101}).status_code, 400)
+        with db() as conn:
+            saved_feature = conn.execute("SELECT body,user_id FROM feature_requests WHERE id=?", (feature.json["id"],)).fetchone()
+            self.assertEqual(saved_feature["body"], "Add colour labels")
+            self.assertEqual(saved_feature["user_id"], a["user"]["id"])
         event = self.post(self.first, a["csrf"], "/api/events", {"title": "School pickup", "category": "school", "start_at": "2026-10-05T15:30"})
         self.assertEqual(event.status_code, 201, event.get_data(as_text=True))
         self.assertEqual(self.second.get("/api/events").json[0]["title"], "School pickup")
