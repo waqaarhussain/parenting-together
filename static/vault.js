@@ -126,36 +126,54 @@
     });
   }
 
-  async function deviceKey(userId) {
+  async function storedValue(name) {
     var database = await openDb();
-    var existing = await new Promise(function (resolve, reject) {
-      var request = database.transaction("keys").objectStore("keys").get("device:" + userId);
+    return new Promise(function (resolve, reject) {
+      var request = database.transaction("keys").objectStore("keys").get(name);
       request.onsuccess = function () { resolve(request.result); };
       request.onerror = function () { reject(request.error); };
     });
-    if (existing) return existing;
-    var created = await crypto.subtle.generateKey({name:"AES-GCM", length:256}, false, ["encrypt", "decrypt"]);
-    await new Promise(function (resolve, reject) {
-      var request = database.transaction("keys", "readwrite").objectStore("keys").put(created, "device:" + userId);
+  }
+
+  async function storeValue(name, value) {
+    var database = await openDb();
+    return new Promise(function (resolve, reject) {
+      var request = database.transaction("keys", "readwrite").objectStore("keys").put(value, name);
       request.onsuccess = resolve;
       request.onerror = function () { reject(request.error); };
     });
+  }
+
+  async function deviceKey(userId) {
+    var existing = await storedValue("device:" + userId);
+    if (existing) return existing;
+    var created = await crypto.subtle.generateKey({name:"AES-GCM", length:256}, false, ["encrypt", "decrypt"]);
+    await storeValue("device:" + userId, created);
     return created;
   }
 
   async function remember(userId, raw) {
     var key = await deviceKey(userId), iv = randomBytes(12);
     var data = await crypto.subtle.encrypt({name:"AES-GCM", iv:iv}, key, raw);
-    localStorage.setItem("pt-vault-" + userId, JSON.stringify({v:1, iv:b64(iv), data:b64(data)}));
+    var saved = {v:1, iv:b64(iv), data:b64(data)};
+    await storeValue("vault:" + userId, saved);
+    localStorage.setItem("pt-vault-" + userId, JSON.stringify(saved));
+    if (typeof navigator !== "undefined" && navigator.storage && navigator.storage.persist) {
+      try { await navigator.storage.persist(); } catch (_) {}
+    }
   }
 
   async function remembered(userId) {
-    var saved;
-    try { saved = JSON.parse(localStorage.getItem("pt-vault-" + userId)); } catch (_) { return null; }
+    var saved = await storedValue("vault:" + userId), fromLocal = false;
+    if (!saved) {
+      try { saved = JSON.parse(localStorage.getItem("pt-vault-" + userId)); fromLocal = Boolean(saved); } catch (_) { return null; }
+    }
     if (!saved) return null;
     try {
       var key = await deviceKey(userId);
-      return new Uint8Array(await crypto.subtle.decrypt({name:"AES-GCM", iv:unb64(saved.iv)}, key, unb64(saved.data)));
+      var raw = new Uint8Array(await crypto.subtle.decrypt({name:"AES-GCM", iv:unb64(saved.iv)}, key, unb64(saved.data)));
+      if (fromLocal) await storeValue("vault:" + userId, saved);
+      return raw;
     } catch (_) {
       localStorage.removeItem("pt-vault-" + userId);
       return null;

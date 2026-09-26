@@ -118,15 +118,15 @@ body.view-calendar .page{overflow:hidden}
   .mobile-nav button svg{width:16px;height:16px}
   .mobile-nav button span:not(.unread-badge){max-width:100%;overflow:hidden;text-overflow:ellipsis}
   .page:has(.calendar-wrap) .calendar-card{border-bottom:1px solid var(--line)}
-  .page:has(.calendar-wrap) .calendar-wrap{height:100%;min-height:0;grid-template-rows:auto minmax(0,1fr);overflow:hidden}
-  .page:has(.calendar-wrap) .calendar-card{padding:6px 9px}
+  .page:has(.calendar-wrap) .calendar-wrap{height:100%;min-height:0;grid-template-rows:minmax(0,1fr) auto;overflow:hidden}
+  .page:has(.calendar-wrap) .calendar-card{padding:6px 9px;display:flex;min-height:0;flex-direction:column}
   .calendar-head{margin-bottom:3px;height:30px}.calendar-head strong{font-size:15px}
-  .calendar-grid{gap:3px}.weekday{padding:2px;font-size:8px}.day{height:42px;min-height:42px;padding:3px;border-radius:8px;font-size:9px}.event-chip{margin-top:1px;padding:1px 3px;line-height:11px}.day-num{line-height:10px}
+  .calendar-grid{flex:1;min-height:0;grid-template-rows:18px;grid-auto-rows:minmax(42px,1fr);gap:3px}.weekday{padding:2px;font-size:8px}.day{height:auto;min-height:42px;padding:3px;border-radius:8px;font-size:9px}.event-chip{margin-top:1px;padding:1px 3px;line-height:11px}.day-num{line-height:10px}
   .quick-event-card{min-height:0;overflow:auto;padding:8px 12px 10px!important}
   .quick-event-heading{margin-bottom:5px}.quick-event-heading h3{font-size:17px}.quick-event-heading p{display:none}
   .quick-event-grid{gap:4px 7px}
-  .quick-event-grid .field{gap:2px}.quick-event-grid label{font-size:8px}
-  .quick-event-grid input[type="datetime-local"]{width:100%;font-size:9px;padding:4px}
+  .quick-event-grid .field{gap:2px;width:100%;min-width:0;overflow:hidden}.quick-event-grid label{font-size:8px}
+  .quick-event-grid input[type="datetime-local"]{display:block;inline-size:100%;min-inline-size:0;max-inline-size:100%;width:100%;min-width:0;max-width:100%;font-size:9px;padding:4px;overflow:hidden}
   .quick-event-grid input,.quick-event-grid select,.quick-event-grid textarea{height:31px;min-height:31px;padding:4px 6px;font-size:10px}
   .quick-event-grid textarea{height:31px;min-height:31px;resize:none}.quick-notes{grid-column:auto}.quick-repeat-until{grid-column:auto}
   .quick-event-heading .tiny-button{padding:6px 10px}
