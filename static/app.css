@@ -23,7 +23,12 @@ body,button,input,select,textarea,.invite-code,.message-hash{font-family:Inter,u
 
 .nav-button .unread-badge{margin-left:auto}
 .unread-badge{display:inline-flex;align-items:center;justify-content:center;min-width:19px;height:19px;padding:0 5px;border-radius:999px;background:var(--danger);color:#fff;font-size:10px;font-weight:800;line-height:1}
-.typing-indicator{display:block;margin-top:5px;color:var(--primary)!important;font-weight:700}
+.compose-area{background:var(--panel);border-top:1px solid var(--line)}
+.compose-area .chat-compose{border-top:0}
+.typing-indicator{padding:8px 15px 0;color:var(--primary);font-size:11px;font-weight:800}
+.typing-indicator:before{content:"";display:inline-block;width:7px;height:7px;margin-right:7px;border-radius:50%;background:var(--primary);animation:typing-pulse 1s ease-in-out infinite}
+.timeline-detail{display:inline-block;max-width:min(720px,100%);margin-top:6px;padding:8px 10px;border-radius:10px;background:var(--panel-2);color:var(--text);font-size:12px;line-height:1.45;white-space:pre-wrap;overflow-wrap:anywhere}
+@keyframes typing-pulse{50%{opacity:.35;transform:scale(.78)}}
 #history-trigger{text-align:center}
 #load-older{margin:0 auto 6px}
 .chat-header>div{min-width:0}
