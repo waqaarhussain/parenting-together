@@ -35,8 +35,8 @@ var pages = [
   ["handovers","Handovers",icons.swap],
   ["decisions","Decisions",icons.check],
   ["expenses","Expenses",icons.wallet],
-  ["evidence","Evidence",icons.shield],
   ["rules","Rules",icons.rules],
+  ["evidence","Evidence",icons.shield],
   ["search","Search",icons.search]
 ];
 
@@ -277,7 +277,7 @@ function renderNav() {
     return '<button class="nav-button '+(state.page===p[0]?"active":"")+'" data-page="'+p[0]+'">'+p[2]+'<span>'+p[1]+'</span>'+(p[0]==="messages"?'<span class="unread-badge hidden"></span>':'')+'</button>';
   }).join("");
   desktop.querySelectorAll("[data-page]").forEach(function(b){ b.onclick=function(){ navigate(b.dataset.page); }; });
-  var mobileKeys = ["home","messages","calendar","handovers","decisions","evidence","rules"];
+  var mobileKeys = ["home","messages","calendar","handovers","decisions","rules","evidence"];
   document.getElementById("mobile-nav").innerHTML = mobileKeys.map(function(k){
     var p = pages.find(function(x){return x[0]===k;});
     return '<button class="'+(state.page===k?"active":"")+'" data-page="'+k+'">'+p[2]+'<span>'+p[1]+'</span>'+(k==="messages"?'<span class="unread-badge hidden"></span>':'')+'</button>';
@@ -755,7 +755,7 @@ function printMessageExport(messages){
 
 async function renderRules() {
   var items=await api("/api/rules");
-  document.getElementById("page").innerHTML='<div class="page-grid"><section class="card span-7"><div class="card-head"><div><h3>Saved agreement rules</h3><p>Turn parts of your parenting agreement into visible rules instead of relying on memory.</p></div></div>'+(items.length?'<div class="list">'+items.map(function(x){return '<div class="list-item" data-record-type="rule" data-record-id="'+x.id+'"><div class="list-main"><div class="list-title">'+esc(x.title)+'</div><div class="list-sub">'+esc(x.rule_type.replaceAll("_"," "))+' · '+esc(x.value_text)+'</div></div></div>';}).join("")+'</div>':'<div class="empty"><strong>No rules yet</strong>Add the important rules both parents should be able to see.</div>')+'</section><section class="card span-5"><div class="card-head"><div><h3>Add rule</h3><p>Holiday notice rules are actively checked when a holiday is added.</p></div></div><form id="rule-form" class="form-stack"><div class="field"><label>Rule name</label><input name="title" required placeholder="Holiday notice"></div><div class="field"><label>Type</label><select name="rule_type"><option value="holiday_notice_days">Holiday notice days</option><option value="handover_time">Usual handover time</option><option value="expense_split">Default expense split</option><option value="custom">Custom rule</option></select></div><div class="field"><label>Value</label><input name="value_text" required placeholder="28"></div><button class="primary-button" type="submit">Save rule</button></form></section></div>';
+  document.getElementById("page").innerHTML='<div class="page-grid"><section class="card span-7"><div class="card-head"><div><h3>Saved agreement rules</h3><p>Turn parts of your parenting agreement into visible rules instead of relying on memory.</p></div></div>'+(items.length?'<div class="list">'+items.map(function(x){return '<div class="list-item" data-record-type="rule" data-record-id="'+x.id+'"><div class="list-main"><div class="list-title">'+esc(x.title)+'</div><div class="list-sub">'+esc(x.rule_type.replaceAll("_"," "))+' · '+esc(x.value_text)+'</div></div></div>';}).join("")+'</div>':'<div class="empty"><strong>No rules yet</strong>Add the important rules both parents should be able to see.</div>')+'</section><section class="card span-5"><div class="card-head"><div><h3>Add rule</h3><p>Holiday notice rules are actively checked when a holiday is added.</p></div></div><form id="rule-form" class="form-stack"><div class="field"><label>Rule name</label><input name="title" required placeholder="Holiday notice"></div><div class="field"><label>Type</label><select name="rule_type"><option value="holiday_notice_days">Holiday notice days</option><option value="handover_time">Usual handover time</option><option value="expense_split">Default expense split</option><option value="custom">Custom rule</option></select></div><div class="field"><label>Value</label><input name="value_text" required placeholder="28"></div><button class="primary-button panel-action-button" type="submit">Save rule</button></form></section></div>';
   document.getElementById("rule-form").onsubmit=async function(e){e.preventDefault();var fd=new FormData(e.target);try{await api("/api/rules",{method:"POST",json:{title:fd.get("title"),rule_type:fd.get("rule_type"),value_text:fd.get("value_text")}});renderRules();toast("Rule saved","success");}catch(err){toast(err.message,"error");}};
   focusRecordTarget();
 }
