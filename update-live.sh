@@ -37,8 +37,7 @@ if ! command -v caddy >/dev/null 2>&1; then
   apt-get install -y caddy
 fi
 install -m 644 deploy/Caddyfile /etc/caddy/Caddyfile
-mkdir -p /etc/systemd/system/caddy.service.d
-install -m 644 deploy/caddy-parenting-together.conf /etc/systemd/system/caddy.service.d/parenting-together.conf
+rm -f /etc/systemd/system/caddy.service.d/parenting-together.conf
 if ! caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile; then
   systemctl stop caddy >/dev/null 2>&1 || true
   systemctl start nginx >/dev/null 2>&1 || true
@@ -63,4 +62,4 @@ fi
 echo
 echo "Updated to: $(git rev-parse --short HEAD)"
 echo "Parenting Together is live."
-echo "HTTPS: https://${PARENTING_DOMAIN:-v2202603253680444276.megasrv.de}"
+echo "HTTPS: https://v2202603253680444276.megasrv.de"
