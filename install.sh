@@ -38,7 +38,6 @@ SECRET_KEY=$SECRET
 DATABASE_PATH=$DATA_DIR/parenting.db
 UPLOAD_DIR=$DATA_DIR/uploads
 MAX_UPLOAD_MB=10
-PARENTING_DOMAIN=v2202603253680444276.megasrv.de
 ENV
   chmod 640 "$ENV_FILE"
   chown root:www-data "$ENV_FILE"
@@ -60,8 +59,7 @@ if ! command -v caddy >/dev/null 2>&1; then
   apt-get install -y caddy
 fi
 install -m 644 "$APP_DIR/deploy/Caddyfile" /etc/caddy/Caddyfile
-mkdir -p /etc/systemd/system/caddy.service.d
-install -m 644 "$APP_DIR/deploy/caddy-parenting-together.conf" /etc/systemd/system/caddy.service.d/parenting-together.conf
+rm -f /etc/systemd/system/caddy.service.d/parenting-together.conf
 if ! caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile; then
   systemctl stop caddy >/dev/null 2>&1 || true
   systemctl start nginx >/dev/null 2>&1 || true
