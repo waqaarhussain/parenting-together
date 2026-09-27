@@ -1170,6 +1170,16 @@ def rule_warnings(conn, fid, category, start_at):
     return warnings
 
 
+@app.get("/api/events/status")
+@login_required
+def events_status():
+    fid = require_family()
+    with db() as conn:
+        rows = conn.execute("SELECT * FROM events WHERE family_id=? ORDER BY id", (fid,)).fetchall()
+    source = json.dumps([rowdict(row) for row in rows], sort_keys=True, separators=(",", ":"))
+    return jsonify({"revision": hashlib.sha256(source.encode("utf-8")).hexdigest(), "count": len(rows)})
+
+
 @app.get("/api/events")
 @login_required
 def events():
