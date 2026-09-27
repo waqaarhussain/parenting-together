@@ -1,4 +1,4 @@
-var state = { me: null, vault: null, page: "home", cache: {}, chat: null, unread: 0, notificationUnread: 0, messageTarget: null, eventTarget: null, eventTargetAt: null, recordTarget: null, calendarEvents: [], calendarCursor: new Date(), calendarSelectedDate: null, theme: localStorage.getItem("pt-theme") || "system" };
+var state = { me: null, vault: null, page: "home", cache: {}, chat: null, unread: 0, notificationUnread: 0, messageTarget: null, eventTarget: null, eventTargetAt: null, recordTarget: null, calendarEvents: [], calendarRevision: null, calendarCursor: new Date(), calendarSelectedDate: null, theme: localStorage.getItem("pt-theme") || "system" };
 var liveTimer = null;
 var liveBusy = false;
 var lastNotificationRefresh = 0;
@@ -226,7 +226,9 @@ async function ensureVault() {
   var legacy=await api("/api/vault/legacy");
   var records=await encryptLegacy(legacy);
   await api("/api/vault/setup",{method:"POST",json:{envelope:created.envelope,records:records}});
-  await PTVault.remember(state.me.user.id,state.vault);state.me.vault_envelope=created.envelope;state.me.family_vault_ready=true;
+  await PTVault.remember(state.me.user.id,state.vault);
+  await PTVault.rememberRecovery(state.me.user.id,created.code);
+  state.me.vault_envelope=created.envelope;state.me.family_vault_ready=true;
   await recoveryModal(created.code,"Save your recovery phrase");
   await encryptLegacyReceipts();
 }
@@ -257,6 +259,18 @@ function setAuthTab(tab) {
   document.getElementById("register-form").classList.toggle("hidden", tab !== "register");
 }
 
+function capturePendingInvite() {
+  var params=new URLSearchParams(location.hash.replace(/^#/,'')),code=params.get('invite');
+  if(!code)return;
+  sessionStorage.setItem('pt-pending-invite',code);
+  history.replaceState(null,'',location.pathname+location.search);
+}
+
+function openPendingInvite() {
+  var code=sessionStorage.getItem('pt-pending-invite');
+  if(code&&state.me&&state.me.members.length<2)openInviteModal(code);
+}
+
 async function bootstrap() {
   applyTheme();
   if ("serviceWorker" in navigator) navigator.serviceWorker.register("/static/sw.js?v=" + encodeURIComponent(appVersion), {updateViaCache:"none"}).catch(function(){});
@@ -269,6 +283,7 @@ async function bootstrap() {
     state.me = await api("/api/me");
     showApp();
     await render();
+    openPendingInvite();
   } catch (e) {
     showAuth();
     toast(e.message, "error");
@@ -299,13 +314,16 @@ function startAppUpdateWatcher() {
 function showAuth() {
   state.me = null;
   state.chat = null;
+  state.calendarRevision = null;
   if (liveTimer) clearInterval(liveTimer);
   liveTimer = null;
+  document.body.classList.remove("app-active");
   setPageMode(null);
   document.getElementById("auth-view").classList.remove("hidden");
   document.getElementById("app-view").classList.add("hidden");
 }
 function showApp() {
+  document.body.classList.add("app-active");
   document.getElementById("auth-view").classList.add("hidden");
   document.getElementById("app-view").classList.remove("hidden");
   document.getElementById("user-avatar").textContent = initials(state.me.user.name);
@@ -393,6 +411,13 @@ async function refreshLiveState() {
   liveBusy = true;
   try {
     if (state.page === "messages" && state.chat) await pollChat();
+    if (state.page === "calendar" && state.calendarRevision) {
+      var calendarStatus = await api("/api/events/status");
+      if (calendarStatus.revision !== state.calendarRevision) {
+        state.calendarRevision = calendarStatus.revision;
+        await refreshCalendarEvents();
+      }
+    }
     var status = await api("/api/messages/status");
     state.unread = status.unread;
     updateUnreadBadges();
@@ -494,17 +519,68 @@ function listEvents(items) {
 }
 function bindEventLinks(){document.querySelectorAll("[data-event-open]").forEach(function(button){button.onclick=function(){var id=Number(button.dataset.eventOpen),start=button.dataset.eventStart;if(state.page==="calendar"){var event=state.calendarEvents.find(function(item){return item.id===id&&item.start_at===start;})||state.calendarEvents.find(function(item){return item.id===id;});if(event)openEventModal(event);}else openRecordTarget("event",id,start);};});}
 
-async function openInviteModal() {
+function drawInviteQr(value) {
+  var canvas=document.getElementById('invite-qr-canvas');
+  if(!canvas||!window.PTQRCode)return;
+  var qr=new PTQRCode(0,0);qr.addData(value);qr.make();
+  var count=qr.getModuleCount(),quiet=4,size=232,cell=Math.floor(size/(count+quiet*2)),actual=cell*(count+quiet*2);
+  canvas.width=actual;canvas.height=actual;
+  var context=canvas.getContext('2d');context.fillStyle='#fff';context.fillRect(0,0,actual,actual);context.fillStyle='#000';
+  for(var row=0;row<count;row++)for(var col=0;col<count;col++)if(qr.isDark(row,col))context.fillRect((col+quiet)*cell,(row+quiet)*cell,cell,cell);
+}
+
+function requestExistingRecovery() {
+  return new Promise(function(resolve,reject){
+    document.body.classList.add('modal-required');
+    openModal('<h3>Confirm your recovery phrase</h3><p>This older account did not keep its recovery phrase on this device. Enter the phrase you saved at signup so the same phrase protects the joined family.</p><form id="confirm-recovery-form" class="form-stack"><div class="field"><label>Recovery phrase</label><textarea name="code" autocomplete="off" required placeholder="000 000 000 …"></textarea></div><button class="primary-button" type="submit">Continue joining</button><button class="soft-button" id="cancel-recovery-join" type="button">Cancel</button></form>',function(){
+      var form=document.getElementById('confirm-recovery-form');
+      form.onsubmit=async function(e){e.preventDefault();var code=String(new FormData(form).get('code')||'').trim();try{await PTVault.unlock(state.me.user.id,state.me.vault_envelope,code);closeModal(true);resolve(code);}catch(error){toast(error.message,'error');}};
+      document.getElementById('cancel-recovery-join').onclick=function(){closeModal(true);reject(new Error('Joining cancelled.'));};
+    });
+  });
+}
+
+function bindJoinFamilyForm(prefillCode) {
+  var form=document.getElementById('join-family-form');
+  if(!form)return;
+  if(prefillCode)form.elements.namedItem('code').value=prefillCode;
+  form.onsubmit=async function(e){
+    e.preventDefault();
+    var button=e.target.querySelector('button[type="submit"]'),code=String(new FormData(e.target).get('code')||'').trim();
+    button.disabled=true;button.textContent='Joining…';
+    try{
+      var lookup=await PTVault.inviteLookup(code);
+      var resolved=await api('/api/family/invite/resolve',{method:'POST',json:{lookup:lookup}});
+      var existingRecovery=await PTVault.recovery(state.me.user.id);
+      if(!existingRecovery)existingRecovery=await requestExistingRecovery();
+      var accepted=await PTVault.acceptInvite(code,resolved.payload,existingRecovery);
+      var joined=await api('/api/family/join',{method:'POST',json:{invite_lookup:lookup,envelope:accepted.envelope}});
+      await PTVault.remember(joined.user.id,accepted.vault);
+      await PTVault.rememberRecovery(joined.user.id,accepted.code);
+      sessionStorage.removeItem('pt-pending-invite');
+      state.vault=accepted.vault;state.me=joined;closeModal(true);
+      state.me=await api('/api/me');showApp();await render();toast('Co-parent family space connected','success');
+    }catch(error){button.disabled=false;button.textContent='Join family space';toast(error.message,'error');}
+  };
+}
+
+async function openInviteModal(prefillCode) {
+  if(typeof prefillCode!=="string")prefillCode="";
   var connected = state.me.members.length>1;
   if(connected){openModal('<h3>Parents connected</h3><p>'+state.me.members.map(function(member){return esc(member.name);}).join(' and ')+' are connected to this encrypted family space.</p>');return;}
+  if(prefillCode){
+    openModal('<h3>Join family space</h3><p>Check the invite code, then join this encrypted family space.</p><form id="join-family-form" class="form-stack"><div class="field"><label>Secure invite code</label><input name="code" class="invite-entry" autocomplete="off" autocapitalize="characters" spellcheck="false" required placeholder="ABCD-EFGH-JKLM-NPQR-STUV-WXYZ"></div><button class="primary-button" type="submit">Join family space</button></form>',function(){bindJoinFamilyForm(prefillCode);});
+    return;
+  }
   openModal('<h3>Connect your co-parent</h3><p>Creating a single-use encrypted invite code…</p>');
   try{
     var invitation=await PTVault.createInvite(state.vault);
     await api('/api/family/invite',{method:'POST',json:{lookup:invitation.lookup,payload:invitation.payload}});
-    document.getElementById('modal-content').innerHTML='<h3>Connect your co-parent</h3><p>Send this complete code privately. It expires after seven days and stops working as soon as it is used.</p><div class="secure-invite"><strong class="secure-invite-code">'+esc(invitation.code)+'</strong><small>Single use · end-to-end encrypted · no approval required</small></div><button class="primary-button wide" id="share-invite">Share invite code</button><button class="soft-button wide" id="copy-invite">Copy invite code</button><div class="invite-divider"><span>or enter a code you received</span></div><form id="join-family-form" class="form-stack"><div class="field"><label>Secure invite code</label><input name="code" class="invite-entry" autocomplete="off" autocapitalize="characters" spellcheck="false" required placeholder="ABCD-EFGH-JKLM-NPQR-STUV-WXYZ"></div><button class="primary-button" type="submit">Join family space</button></form>';
+    document.getElementById('modal-content').innerHTML='<h3>Connect your co-parent</h3><p>Send this complete code privately. It expires after seven days and stops working as soon as it is used.</p><div class="secure-invite"><strong class="secure-invite-code">'+esc(invitation.code)+'</strong><small>Single use · end-to-end encrypted · no approval required</small></div><button class="soft-button wide" id="share-invite">Share invite code</button><button class="soft-button wide" id="copy-invite">Copy invite code</button><button class="soft-button wide" id="show-invite-qr">Show QR code</button><div id="invite-qr-panel" class="invite-qr-panel hidden"><canvas id="invite-qr-canvas" aria-label="Invite QR code"></canvas><small>Scanning opens the app with this code ready to join.</small></div><div class="invite-divider"><span>or enter a code you received</span></div><form id="join-family-form" class="form-stack"><div class="field"><label>Secure invite code</label><input name="code" class="invite-entry" autocomplete="off" autocapitalize="characters" spellcheck="false" required placeholder="ABCD-EFGH-JKLM-NPQR-STUV-WXYZ"></div><button class="primary-button" type="submit">Join family space</button></form>';
     document.getElementById('copy-invite').onclick=function(){navigator.clipboard.writeText(invitation.code);toast('Invite code copied','success');};
-    document.getElementById('share-invite').onclick=async function(){var text='Parenting Together secure invite code: '+invitation.code;if(navigator.share){try{await navigator.share({title:'Parenting Together invite',text:text});}catch(_){}}else{await navigator.clipboard.writeText(invitation.code);toast('Invite code copied','success');}};
-    document.getElementById('join-family-form').onsubmit=async function(e){e.preventDefault();var button=e.target.querySelector('button[type="submit"]'),code=new FormData(e.target).get('code');button.disabled=true;button.textContent='Joining…';try{var lookup=await PTVault.inviteLookup(code);var resolved=await api('/api/family/invite/resolve',{method:'POST',json:{lookup:lookup}});var accepted=await PTVault.acceptInvite(code,resolved.payload);var joined=await api('/api/family/join',{method:'POST',json:{invite_lookup:lookup,envelope:accepted.envelope}});await PTVault.remember(joined.user.id,accepted.vault);state.vault=accepted.vault;state.me=joined;closeModal(true);await recoveryModal(accepted.code,'Save your new family recovery phrase');state.me=await api('/api/me');showApp();render();toast('Co-parent family space connected','success');}catch(error){button.disabled=false;button.textContent='Join family space';toast(error.message,'error');}};
+    document.getElementById('share-invite').onclick=async function(){if(navigator.share){try{await navigator.share({text:invitation.code});}catch(_){}}else{await navigator.clipboard.writeText(invitation.code);toast('Invite code copied','success');}};
+    document.getElementById('show-invite-qr').onclick=function(){var panel=document.getElementById('invite-qr-panel'),showing=panel.classList.contains('hidden');panel.classList.toggle('hidden',!showing);this.textContent=showing?'Hide QR code':'Show QR code';if(showing)drawInviteQr(location.origin+'/#invite='+encodeURIComponent(invitation.code));};
+    bindJoinFamilyForm();
   }catch(error){closeModal();toast(error.message,'error');}
 }
 
@@ -521,7 +597,7 @@ function messageMeta(message) {
 function messageHtml(message) {
   var mine = message.sender_id === state.me.user.id;
   return '<div class="message-row '+(mine?"mine":"")+'" data-message-id="'+message.id+'"><div class="bubble-wrap">'+
-    (!mine?'<div class="message-sender">'+esc(message.sender_name)+'</div>':'')+
+    '<div class="message-sender">'+esc(message.sender_name)+'</div>'+
     '<div class="bubble">'+esc(message.body)+'</div><div class="message-meta">'+esc(messageMeta(message))+'</div></div></div>';
 }
 async function pollChat(force) {
@@ -676,24 +752,47 @@ async function clientRuleWarnings(payload) {
   return warnings;
 }
 
+function calendarBounds(cursor) {
+  var y=cursor.getFullYear(),m=cursor.getMonth(),first=new Date(y,m,1),mondayOffset=(first.getDay()+6)%7;
+  var start=new Date(y,m,1-mondayOffset),daysInMonth=new Date(y,m+1,0).getDate(),cellCount=Math.ceil((mondayOffset+daysInMonth)/7)*7;
+  var end=new Date(start);end.setDate(end.getDate()+cellCount-1);end.setHours(23,59,59,999);
+  return {year:y,month:m,start:start,end:end,cellCount:cellCount};
+}
+
+function calendarEventButtons(key,events) {
+  return events.filter(function(event){return dateKey(appDate(event.start_at,event.timezone_name),displayTimeZone())===key;}).slice(0,3).map(function(event){
+    var target=state.eventTarget===event.id&&(!state.eventTargetAt||String(event.start_at).slice(0,16)===String(state.eventTargetAt).slice(0,16));
+    return '<button class="event-chip'+(target?' event-target':'')+'" style="--event-color:'+esc(event.creator_color||"#8a74ff")+'" data-event-open="'+event.id+'" data-event-start="'+esc(event.start_at)+'">'+esc(event.title)+'</button>';
+  }).join('');
+}
+
+async function refreshCalendarEvents() {
+  var bounds=calendarBounds(state.calendarCursor);
+  var events=await api("/api/events?start="+encodeURIComponent(bounds.start.toISOString())+"&end="+encodeURIComponent(bounds.end.toISOString()));
+  if(state.page!=="calendar"||!document.querySelector(".calendar-grid"))return;
+  state.calendarEvents=events;
+  document.querySelectorAll("[data-calendar-key]").forEach(function(day){
+    var container=day.querySelector(".day-events");
+    if(container)container.innerHTML=calendarEventButtons(day.dataset.calendarKey,events);
+  });
+  bindEventLinks();
+}
+
 async function renderCalendar() {
   var cur=state.calendarCursor;
-  var y=cur.getFullYear(),m=cur.getMonth();
-  var first=new Date(y,m,1),mondayOffset=(first.getDay()+6)%7;
-  var start=new Date(y,m,1-mondayOffset);
-  var daysInMonth=new Date(y,m+1,0).getDate(),cellCount=Math.ceil((mondayOffset+daysInMonth)/7)*7;
-  var rangeEnd=new Date(start);rangeEnd.setDate(rangeEnd.getDate()+cellCount-1);rangeEnd.setHours(23,59,59,999);
-  var events=await api("/api/events?start="+encodeURIComponent(start.toISOString())+"&end="+encodeURIComponent(rangeEnd.toISOString()));
+  var bounds=calendarBounds(cur),y=bounds.year,m=bounds.month,start=bounds.start,cellCount=bounds.cellCount;
+  var eventStatus=await api("/api/events/status");
+  var events=await api("/api/events?start="+encodeURIComponent(start.toISOString())+"&end="+encodeURIComponent(bounds.end.toISOString()));
+  state.calendarRevision=eventStatus.revision;
   state.calendarEvents=events;
   var today=new Date(),todayKey=dateKey(today,displayTimeZone());
   var cells="";
   for(var i=0;i<cellCount;i++){
     var d=new Date(start);d.setDate(start.getDate()+i);
     var key=d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0");
-    var ev=events.filter(function(x){return dateKey(appDate(x.start_at,x.timezone_name),displayTimeZone())===key;});
     var selectable=key>=todayKey;
     var cls="day"+(d.getMonth()!==m?" other":"")+(key===todayKey?" today":"")+(selectable?" selectable":"")+(state.calendarSelectedDate===key?" selected":"");
-    cells+='<div class="'+cls+'"'+(selectable?' data-calendar-date="'+key+'"':'')+'><div class="day-num">'+d.getDate()+'</div>'+ev.slice(0,3).map(function(x){var target=state.eventTarget===x.id&&(!state.eventTargetAt||String(x.start_at).slice(0,16)===String(state.eventTargetAt).slice(0,16));return '<button class="event-chip'+(target?' event-target':'')+'" style="--event-color:'+esc(x.creator_color||"#8a74ff")+'" data-event-open="'+x.id+'" data-event-start="'+esc(x.start_at)+'">'+esc(x.title)+'</button>';}).join("")+'</div>';
+    cells+='<div class="'+cls+'" data-calendar-key="'+key+'"'+(selectable?' data-calendar-date="'+key+'"':'')+'><div class="day-num">'+d.getDate()+'</div><div class="day-events">'+calendarEventButtons(key,events)+'</div></div>';
   }
   var nextHour=new Date(Date.now()+60*60*1000),defaultStartValue=state.calendarSelectedDate&&state.calendarSelectedDate!==todayKey?state.calendarSelectedDate+"T00:00":localDateTimeValue(nextHour);
   var defaultEndValue=state.calendarSelectedDate&&state.calendarSelectedDate!==todayKey?state.calendarSelectedDate+"T01:00":localDateTimeValue(new Date(nextHour.getTime()+60*60*1000));
@@ -863,7 +962,8 @@ document.getElementById("search-shortcut").onclick=function(){navigate("search")
 document.getElementById("notification-button").insertAdjacentHTML("afterbegin",icons.bell);
 document.getElementById("notification-button").onclick=openNotifications;
 populateTimezoneChoices();
-document.getElementById("login-form").onsubmit=async function(e){e.preventDefault();var fd=new FormData(e.target);try{state.me=await api("/api/auth/login",{method:"POST",json:{identifier:fd.get("identifier"),password:fd.get("password")}});await ensureVault();state.me=await api("/api/me");showApp();render();}catch(err){toast(err.message,"error");}};
-document.getElementById("register-form").onsubmit=async function(e){e.preventDefault();var fd=new FormData(e.target);try{var created=await PTVault.create();state.me=await api("/api/auth/register",{method:"POST",json:{name:fd.get("name"),email:fd.get("email"),password:fd.get("password"),timezone_name:fd.get("timezone_name"),calendar_color:fd.get("calendar_color"),vault_envelope:created.envelope}});state.vault=created.vault;await PTVault.remember(state.me.user.id,state.vault);await recoveryModal(created.code,"Save your recovery phrase");showApp();render();toast("Your encrypted family space is ready","success");}catch(err){toast(err.message,"error");}};
+document.getElementById("login-form").onsubmit=async function(e){e.preventDefault();var fd=new FormData(e.target);try{state.me=await api("/api/auth/login",{method:"POST",json:{identifier:fd.get("identifier"),password:fd.get("password")}});await ensureVault();state.me=await api("/api/me");showApp();await render();openPendingInvite();}catch(err){toast(err.message,"error");}};
+document.getElementById("register-form").onsubmit=async function(e){e.preventDefault();var fd=new FormData(e.target);try{var created=await PTVault.create();state.me=await api("/api/auth/register",{method:"POST",json:{name:fd.get("name"),email:fd.get("email"),password:fd.get("password"),timezone_name:fd.get("timezone_name"),calendar_color:fd.get("calendar_color"),vault_envelope:created.envelope}});state.vault=created.vault;await PTVault.remember(state.me.user.id,state.vault);await PTVault.rememberRecovery(state.me.user.id,created.code);await recoveryModal(created.code,"Save your recovery phrase");showApp();await render();openPendingInvite();toast("Your encrypted family space is ready","success");}catch(err){toast(err.message,"error");}};
 document.getElementById("logout-button").onclick=async function(){try{await api("/api/auth/logout",{method:"POST",json:{}});}catch(e){}location.reload();};
+capturePendingInvite();
 bootstrap();

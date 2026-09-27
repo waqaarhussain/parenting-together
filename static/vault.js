@@ -163,6 +163,24 @@
     }
   }
 
+  async function rememberRecovery(userId, code) {
+    if (normaliseCode(code).length !== 48) throw new Error("Enter all 16 recovery phrase groups.");
+    var key = await deviceKey(userId), iv = randomBytes(12);
+    var data = await crypto.subtle.encrypt({name:"AES-GCM", iv:iv}, key, enc.encode(code));
+    await storeValue("recovery:" + userId, {v:1, iv:b64(iv), data:b64(data)});
+  }
+
+  async function recovery(userId) {
+    var saved = await storedValue("recovery:" + userId);
+    if (!saved) return null;
+    try {
+      var key = await deviceKey(userId);
+      return dec.decode(await crypto.subtle.decrypt({name:"AES-GCM", iv:unb64(saved.iv)}, key, unb64(saved.data)));
+    } catch (_) {
+      return null;
+    }
+  }
+
   async function remembered(userId) {
     var saved = await storedValue("vault:" + userId), fromLocal = false;
     if (!saved) {
@@ -225,6 +243,7 @@
   async function unlock(userId, envelope, code) {
     var raw = await unwrap(envelope, code);
     await remember(userId, raw);
+    await rememberRecovery(userId, code);
     return vaultFromRaw(raw);
   }
 
@@ -241,7 +260,7 @@
     return (await inviteMaterial(code)).lookup;
   }
 
-  async function acceptInvite(code, payload) {
+  async function acceptInvite(code, payload, existingRecovery) {
     if (!payload || payload.v !== 1 || !payload.iv || !payload.data) throw new Error("This secure invite is invalid.");
     var material = await inviteMaterial(code), raw;
     try {
@@ -252,12 +271,13 @@
       throw new Error("That invite code is incorrect or has expired.");
     }
     if (raw.length !== 32) throw new Error("This secure invite is invalid.");
-    var recovery = recoveryCode(), envelope = await wrap(raw, recovery);
-    return {vault:await vaultFromRaw(raw), code:recovery, envelope:envelope};
+    var recoveryValue = existingRecovery || recoveryCode(), envelope = await wrap(raw, recoveryValue);
+    return {vault:await vaultFromRaw(raw), code:recoveryValue, envelope:envelope};
   }
 
   async function rememberVault(userId, vault) { await remember(userId, vault.raw); }
 
   window.PTVault = {create:create, load:load, unlock:unlock, createInvite:createInvite,
-    inviteLookup:inviteLookup, acceptInvite:acceptInvite, remember:rememberVault, prefix:PREFIX};
+    inviteLookup:inviteLookup, acceptInvite:acceptInvite, remember:rememberVault,
+    rememberRecovery:rememberRecovery, recovery:recovery, prefix:PREFIX};
 }());
