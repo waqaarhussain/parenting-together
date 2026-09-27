@@ -256,6 +256,7 @@ class TwoParentFlow(unittest.TestCase):
         starts = (datetime.now(ZoneInfo("Europe/London")) + timedelta(minutes=30)).replace(
             tzinfo=None, second=0, microsecond=0
         )
+        initial_event_revision = self.second.get("/api/events/status").json["revision"]
         repeat_until = (starts + timedelta(days=2)).date().isoformat()
         payload = {"title": "Medicine", "category": "appointment", "start_at": starts.isoformat(timespec="minutes"),
                    "end_at": "", "notes": "Bring prescription", "reminder_minutes": 60,
@@ -263,6 +264,8 @@ class TwoParentFlow(unittest.TestCase):
         created = self.post(self.first, a["csrf"], "/api/events", payload)
         self.assertEqual(created.status_code, 201, created.get_data(as_text=True))
         event_id = created.json["id"]
+        created_event_revision = self.second.get("/api/events/status").json["revision"]
+        self.assertNotEqual(created_event_revision, initial_event_revision)
 
         no_end_payload = dict(payload, title="Weekly club", recurrence="weekly", recurrence_until="")
         no_end = self.post(self.first, a["csrf"], "/api/events", no_end_payload)
@@ -284,6 +287,8 @@ class TwoParentFlow(unittest.TestCase):
         payload["title"] = "Updated medicine appointment"
         updated = self.first.put(f"/api/events/{event_id}", json=payload, headers={"X-CSRF-Token": a["csrf"]})
         self.assertEqual(updated.status_code, 200, updated.get_data(as_text=True))
+        updated_event_revision = self.second.get("/api/events/status").json["revision"]
+        self.assertNotEqual(updated_event_revision, created_event_revision)
         event_search = self.second.get("/api/search?q=Updated%20medicine").json
         match = next(item for item in event_search if item["type"] == "event")
         self.assertEqual(match["id"], event_id)
@@ -291,6 +296,7 @@ class TwoParentFlow(unittest.TestCase):
 
         cancelled = self.first.delete(f"/api/events/{event_id}", json={}, headers={"X-CSRF-Token": a["csrf"]})
         self.assertEqual(cancelled.status_code, 200)
+        self.assertNotEqual(self.second.get("/api/events/status").json["revision"], updated_event_revision)
         remaining = self.second.get(
             "/api/events?start=" + starts.date().isoformat() + "&end=" + (starts + timedelta(days=3)).isoformat()
         ).json
