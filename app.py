@@ -10,6 +10,7 @@ import calendar as month_calendar
 from datetime import datetime, timedelta, timezone
 from functools import wraps
 from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from flask import Flask, jsonify, render_template, request, send_file, send_from_directory, session
 from reportlab.lib import colors
@@ -55,6 +56,7 @@ def deployed_version():
 app.config["APP_VERSION"] = deployed_version()
 
 ALLOWED_EXTENSIONS = {"png", "jpg", "jpeg", "webp", "pdf", "ptenc"}
+CALENDAR_COLOURS = {"#8a74ff", "#3b82f6", "#14b8a6", "#22c55e", "#f97316", "#ec4899"}
 
 Path(app.config["DATABASE_PATH"]).parent.mkdir(parents=True, exist_ok=True)
 Path(app.config["UPLOAD_DIR"]).mkdir(parents=True, exist_ok=True)
@@ -78,6 +80,9 @@ def init_db():
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT NOT NULL,
         email TEXT NOT NULL UNIQUE COLLATE NOCASE,
+        username TEXT,
+        timezone_name TEXT NOT NULL DEFAULT 'Europe/London',
+        calendar_color TEXT NOT NULL DEFAULT '#8a74ff',
         password_hash TEXT NOT NULL,
         created_at TEXT NOT NULL
     );
@@ -166,6 +171,7 @@ def init_db():
         recurrence TEXT NOT NULL DEFAULT 'none',
         recurrence_until TEXT,
         timezone_offset INTEGER NOT NULL DEFAULT 0,
+        timezone_name TEXT NOT NULL DEFAULT 'Europe/London',
         cancelled_at TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT,
@@ -181,6 +187,7 @@ def init_db():
         location TEXT,
         status TEXT NOT NULL DEFAULT 'pending',
         response_note TEXT,
+        timezone_name TEXT NOT NULL DEFAULT 'Europe/London',
         completed_at TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
@@ -296,6 +303,10 @@ def init_db():
         user_columns = {row["name"] for row in conn.execute("PRAGMA table_info(users)")}
         if "username" not in user_columns:
             conn.execute("ALTER TABLE users ADD COLUMN username TEXT")
+        if "timezone_name" not in user_columns:
+            conn.execute("ALTER TABLE users ADD COLUMN timezone_name TEXT NOT NULL DEFAULT 'Europe/London'")
+        if "calendar_color" not in user_columns:
+            conn.execute("ALTER TABLE users ADD COLUMN calendar_color TEXT NOT NULL DEFAULT '#8a74ff'")
         conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS users_username_idx ON users(username COLLATE NOCASE) WHERE username IS NOT NULL")
         for user in conn.execute("SELECT id,email FROM users WHERE username IS NULL OR username='' ORDER BY id"):
             base = (user["email"].split("@", 1)[0] if "@" in user["email"] else "parent")[:24]
@@ -312,6 +323,7 @@ def init_db():
             "recurrence": "TEXT NOT NULL DEFAULT 'none'",
             "recurrence_until": "TEXT",
             "timezone_offset": "INTEGER NOT NULL DEFAULT 0",
+            "timezone_name": "TEXT NOT NULL DEFAULT 'Europe/London'",
             "cancelled_at": "TEXT",
             "updated_at": "TEXT",
         }
@@ -319,6 +331,15 @@ def init_db():
             if name not in event_columns:
                 conn.execute("ALTER TABLE events ADD COLUMN " + name + " " + definition)
         conn.execute("UPDATE events SET updated_at=created_at WHERE updated_at IS NULL")
+        conn.execute(
+            """UPDATE events SET timezone_name=COALESCE(
+                   (SELECT timezone_name FROM users WHERE users.id=events.creator_id),
+                   'Europe/London')
+               WHERE timezone_name IS NULL OR timezone_name=''"""
+        )
+        handover_columns = {row["name"] for row in conn.execute("PRAGMA table_info(handovers)")}
+        if "timezone_name" not in handover_columns:
+            conn.execute("ALTER TABLE handovers ADD COLUMN timezone_name TEXT NOT NULL DEFAULT 'Europe/London'")
 
 
 init_db()
@@ -332,6 +353,33 @@ def parse_datetime(value):
     if not value:
         return None
     return datetime.fromisoformat(str(value).replace("Z", "+00:00")).replace(tzinfo=None)
+
+
+def valid_timezone_name(value):
+    name = str(value or "").strip()
+    if not name or len(name) > 64:
+        return None
+    try:
+        ZoneInfo(name)
+    except (ZoneInfoNotFoundError, ValueError):
+        return None
+    return name
+
+
+def event_start_utc(occurrence):
+    local_start = parse_datetime(occurrence["start_at"])
+    timezone_name = valid_timezone_name(occurrence.get("timezone_name"))
+    if timezone_name:
+        return local_start.replace(tzinfo=ZoneInfo(timezone_name)).astimezone(timezone.utc).replace(tzinfo=None)
+    return local_start + timedelta(minutes=int(occurrence.get("timezone_offset") or 0))
+
+
+def format_timestamp(value, timezone_name):
+    parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    shown = parsed.astimezone(ZoneInfo(valid_timezone_name(timezone_name) or "Europe/London"))
+    return f"{shown.day} {shown.strftime('%b %Y')} at {shown.strftime('%I:%M %p').lstrip('0')}"
 
 
 def add_month(value, preferred_day=None):
@@ -464,10 +512,11 @@ def materialize_event_reminders(conn, fid, uid):
         (fid,),
     ).fetchall()
     for event in events:
+        if event["creator_id"] == uid:
+            continue
         reminder_minutes = max(0, min(int(event["reminder_minutes"] or 0), 10080))
         for occurrence in expand_event(event, now - timedelta(days=8), now + timedelta(days=370)):
-            local_start = parse_datetime(occurrence["start_at"])
-            utc_start = local_start + timedelta(minutes=int(occurrence.get("timezone_offset") or 0))
+            utc_start = event_start_utc(occurrence)
             remind_at = utc_start - timedelta(minutes=reminder_minutes)
             if remind_at <= now < utc_start:
                 key = "event-reminder:" + occurrence["occurrence_key"]
@@ -533,7 +582,10 @@ def unique_invite_code(conn):
 
 def me_payload(uid):
     with db() as conn:
-        user = conn.execute("SELECT id,name,username,email,created_at FROM users WHERE id=?", (uid,)).fetchone()
+        user = conn.execute(
+            "SELECT id,name,username,email,timezone_name,calendar_color,created_at FROM users WHERE id=?",
+            (uid,),
+        ).fetchone()
         vault = conn.execute("SELECT envelope_json FROM user_vaults WHERE user_id=?", (uid,)).fetchone()
         fid = family_id_for(uid)
         family = None
@@ -543,7 +595,10 @@ def me_payload(uid):
         if fid:
             family = conn.execute("SELECT id,name,invite_code,created_at FROM families WHERE id=?", (fid,)).fetchone()
             members = conn.execute(
-                "SELECT u.id,u.name,u.username,u.email,fm.role,fm.joined_at FROM family_members fm JOIN users u ON u.id=fm.user_id WHERE fm.family_id=? ORDER BY fm.joined_at",
+                """SELECT u.id,u.name,u.username,u.email,u.timezone_name,u.calendar_color,
+                          fm.role,fm.joined_at
+                   FROM family_members fm JOIN users u ON u.id=fm.user_id
+                   WHERE fm.family_id=? ORDER BY fm.joined_at""",
                 (fid,),
             ).fetchall()
             children = conn.execute("SELECT * FROM children WHERE family_id=? ORDER BY name", (fid,)).fetchall()
@@ -594,23 +649,29 @@ def register():
     data = request.get_json(silent=True) or {}
     name = data.get("name", "").strip()
     email = data.get("email", "").strip().lower()
-    username = data.get("username", "").strip().lower()
     password = data.get("password", "")
-    valid_username = 3 <= len(username) <= 30 and all(ch.isalnum() or ch in "._-" for ch in username)
     valid_email = bool(email) and "@" in email and len(email) <= 254
-    if len(name) < 2 or (not valid_username and not valid_email) or len(password) < 8:
-        return jsonify({"error": "Use your name, a username or email, and a password of at least 8 characters."}), 400
-    if not username:
-        username = email.split("@", 1)[0][:30]
-        if len(username) < 3 or not all(ch.isalnum() or ch in "._-" for ch in username):
-            username = "parent" + secrets.token_hex(3)
-    if not email:
-        email = "local-" + secrets.token_hex(16) + "@account.invalid"
+    timezone_name = valid_timezone_name(data.get("timezone_name"))
+    calendar_color = str(data.get("calendar_color") or "").lower()
+    if len(name) < 2 or not valid_email or len(password) < 8:
+        return jsonify({"error": "Use your name, email address, and a password of at least 8 characters."}), 400
+    if not timezone_name:
+        return jsonify({"error": "Choose a valid timezone."}), 400
+    if calendar_color not in CALENDAR_COLOURS:
+        return jsonify({"error": "Choose one of the available calendar colours."}), 400
     try:
         with db() as conn:
+            base = "".join(ch for ch in email.split("@", 1)[0][:24] if ch.isalnum() or ch in "._-") or "parent"
+            username = base
+            suffix = 1
+            while conn.execute("SELECT 1 FROM users WHERE username=? COLLATE NOCASE", (username,)).fetchone():
+                suffix += 1
+                username = (base[:24] + str(suffix))[:30]
             cur = conn.execute(
-                "INSERT INTO users(name,email,username,password_hash,created_at) VALUES(?,?,?,?,?)",
-                (name, email, username, generate_password_hash(password), now_iso()),
+                """INSERT INTO users(name,email,username,timezone_name,calendar_color,password_hash,created_at)
+                   VALUES(?,?,?,?,?,?,?)""",
+                (name, email, username, timezone_name, calendar_color,
+                 generate_password_hash(password), now_iso()),
             )
             uid = cur.lastrowid
             code = unique_invite_code(conn)
@@ -631,7 +692,7 @@ def register():
                 )
             audit_event(conn, fid, uid, "created", "family", fid, "Created family space")
     except sqlite3.IntegrityError:
-        return jsonify({"error": "That username or email is already in use."}), 409
+        return jsonify({"error": "That email address is already in use."}), 409
     session.clear()
     session["user_id"] = uid
     csrf_token()
@@ -646,7 +707,7 @@ def login():
     with db() as conn:
         user = conn.execute("SELECT * FROM users WHERE email=? COLLATE NOCASE OR username=? COLLATE NOCASE", (identifier, identifier)).fetchone()
     if not user or not check_password_hash(user["password_hash"], password):
-        return jsonify({"error": "Username, email or password is incorrect."}), 401
+        return jsonify({"error": "Email or password is incorrect."}), 401
     session.clear()
     session["user_id"] = user["id"]
     csrf_token()
@@ -1121,7 +1182,9 @@ def events():
         range_end = datetime.now().replace(tzinfo=None) + timedelta(days=730)
     with db() as conn:
         rows = conn.execute(
-            """SELECT e.*,u.name creator_name FROM events e JOIN users u ON u.id=e.creator_id
+            """SELECT e.*,u.name creator_name,u.calendar_color creator_color,
+                      COALESCE(e.timezone_name,u.timezone_name,'Europe/London') timezone_name
+               FROM events e JOIN users u ON u.id=e.creator_id
                WHERE e.family_id=? AND e.cancelled_at IS NULL ORDER BY e.start_at""",
             (fid,),
         ).fetchall()
@@ -1179,14 +1242,19 @@ def create_event():
     uid = session["user_id"]
     stamp = now_iso()
     with db() as conn:
+        owner = conn.execute(
+            "SELECT timezone_name FROM users WHERE id=?", (uid,)
+        ).fetchone()
+        item["timezone_name"] = owner["timezone_name"] if owner else "Europe/London"
         warnings = rule_warnings(conn, fid, item["category"], item["start_at"])
         cur = conn.execute(
             """INSERT INTO events(family_id,creator_id,title,category,start_at,end_at,notes,
-                   reminder_minutes,recurrence,recurrence_until,timezone_offset,created_at,updated_at)
-               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                   reminder_minutes,recurrence,recurrence_until,timezone_offset,timezone_name,
+                   created_at,updated_at)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (fid, uid, item["title"], item["category"], item["start_at"], item["end_at"],
              item["notes"], item["reminder_minutes"], item["recurrence"],
-             item["recurrence_until"], item["timezone_offset"], stamp, stamp),
+             item["recurrence_until"], item["timezone_offset"], item["timezone_name"], stamp, stamp),
         )
         audit_event(conn, fid, uid, "created", "event", cur.lastrowid,
                     "Calendar event added", {"warnings": warnings, **item})
@@ -1212,13 +1280,19 @@ def update_event(item_id):
         ).fetchone()
         if not previous:
             return jsonify({"error": "Event not found."}), 404
+        owner = conn.execute(
+            "SELECT timezone_name FROM users WHERE id=?", (uid,)
+        ).fetchone()
+        updated["timezone_name"] = owner["timezone_name"] if owner else "Europe/London"
         warnings = rule_warnings(conn, fid, updated["category"], updated["start_at"])
         conn.execute(
             """UPDATE events SET title=?,category=?,start_at=?,end_at=?,notes=?,reminder_minutes=?,
-                   recurrence=?,recurrence_until=?,timezone_offset=?,updated_at=? WHERE id=? AND family_id=?""",
+                   recurrence=?,recurrence_until=?,timezone_offset=?,timezone_name=?,updated_at=?
+               WHERE id=? AND family_id=?""",
             (updated["title"], updated["category"], updated["start_at"], updated["end_at"],
              updated["notes"], updated["reminder_minutes"], updated["recurrence"],
-             updated["recurrence_until"], updated["timezone_offset"], now_iso(), item_id, fid),
+             updated["recurrence_until"], updated["timezone_offset"], updated["timezone_name"],
+             now_iso(), item_id, fid),
         )
         audit_event(conn, fid, uid, "updated", "event", item_id,
                     "Calendar event updated",
@@ -1255,7 +1329,10 @@ def list_handovers():
     fid = require_family()
     with db() as conn:
         rows = conn.execute(
-            "SELECT h.*,u.name creator_name FROM handovers h JOIN users u ON u.id=h.creator_id WHERE h.family_id=? ORDER BY h.scheduled_at DESC",
+            """SELECT h.*,u.name creator_name,
+                      COALESCE(h.timezone_name,u.timezone_name,'Europe/London') timezone_name
+               FROM handovers h JOIN users u ON u.id=h.creator_id
+               WHERE h.family_id=? ORDER BY h.scheduled_at DESC""",
             (fid,),
         ).fetchall()
     return jsonify([rowdict(x) for x in rows])
@@ -1274,9 +1351,14 @@ def create_handover():
     uid = session["user_id"]
     stamp = now_iso()
     with db() as conn:
+        owner = conn.execute("SELECT timezone_name FROM users WHERE id=?", (uid,)).fetchone()
+        timezone_name = owner["timezone_name"] if owner else "Europe/London"
         cur = conn.execute(
-            "INSERT INTO handovers(family_id,creator_id,title,scheduled_at,location,status,created_at,updated_at) VALUES(?,?,?,?,?,'pending',?,?)",
-            (fid, uid, title, scheduled, data.get("location", "").strip(), stamp, stamp),
+            """INSERT INTO handovers(family_id,creator_id,title,scheduled_at,location,status,
+                   timezone_name,created_at,updated_at)
+               VALUES(?,?,?,?,?,'pending',?,?,?)""",
+            (fid, uid, title, scheduled, data.get("location", "").strip(), timezone_name,
+             stamp, stamp),
         )
         audit_event(conn, fid, uid, "requested", "handover", cur.lastrowid, "Handover requested")
         notify_family(conn, fid, uid, "handover_requested", "New handover request", title,
@@ -1646,6 +1728,8 @@ def evidence_pdf():
             message_sql += " AND m.created_at<=?"
             message_params.append(end + "T23:59:59")
         messages = conn.execute(message_sql + " ORDER BY m.id", message_params).fetchall()
+        viewer = conn.execute("SELECT timezone_name FROM users WHERE id=?", (session["user_id"],)).fetchone()
+        viewer_timezone = viewer["timezone_name"] if viewer else "Europe/London"
 
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=16*mm, leftMargin=16*mm, topMargin=16*mm, bottomMargin=16*mm)
@@ -1653,7 +1737,7 @@ def evidence_pdf():
     styles.add(ParagraphStyle(name="SmallMuted", parent=styles["BodyText"], fontSize=8, textColor=colors.HexColor("#64748b"), leading=10))
     story = [
         Paragraph("Parenting Together messages", styles["Title"]),
-        Paragraph("Generated " + now_iso(), styles["SmallMuted"]),
+        Paragraph("Generated " + format_timestamp(now_iso(), viewer_timezone), styles["SmallMuted"]),
         Spacer(1, 6*mm),
         Paragraph("Family", styles["Heading2"]),
         Paragraph(html.escape(family["name"]), styles["BodyText"]),
@@ -1666,7 +1750,7 @@ def evidence_pdf():
         Paragraph("Messages", styles["Heading2"]),
     ]
     for m in messages:
-        story.append(Paragraph(html.escape(m["sender_name"] + " · " + m["created_at"][:19].replace("T", " ")), styles["SmallMuted"]))
+        story.append(Paragraph(html.escape(m["sender_name"] + " · " + format_timestamp(m["created_at"], viewer_timezone)), styles["SmallMuted"]))
         story.append(Paragraph(html.escape(m["body"]), styles["BodyText"]))
         story.append(Paragraph("Hash: " + m["record_hash"], styles["SmallMuted"]))
         story.append(Spacer(1, 4*mm))
