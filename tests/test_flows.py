@@ -5,6 +5,7 @@ import time
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 _import_dir = tempfile.TemporaryDirectory()
 os.environ["DATABASE_PATH"] = str(Path(_import_dir.name) / "import.db")
@@ -28,7 +29,10 @@ class TwoParentFlow(unittest.TestCase):
         self.tmp.cleanup()
 
     def register(self, client, name, email):
-        response = client.post("/api/auth/register", json={"name": name, "email": email, "password": "sample-password-123"})
+        response = client.post("/api/auth/register", json={
+            "name": name, "email": email, "password": "sample-password-123",
+            "timezone_name": "Europe/London", "calendar_color": "#8a74ff",
+        })
         self.assertEqual(response.status_code, 201, response.get_data(as_text=True))
         return response.json
 
@@ -46,15 +50,23 @@ class TwoParentFlow(unittest.TestCase):
         self.assertIn(f'/static/app.js?v={version.json["version"]}', page.get_data(as_text=True))
         self.assertIn(f'/static/vault.js?v={version.json["version"]}', page.get_data(as_text=True))
 
-    def test_username_login_and_vault_migration(self):
+    def test_email_signup_legacy_username_login_and_vault_migration(self):
         envelope = {"v": 1, "salt": "salt", "iv": "iv", "data": "wrapped"}
         created = self.first.post("/api/auth/register", json={
-            "name": "Parent One", "username": "parent.one", "email": "",
+            "name": "Parent One", "email": "parent.one@example.test",
             "password": "sample-password-123", "vault_envelope": envelope,
+            "timezone_name": "America/New_York", "calendar_color": "#3b82f6",
         })
         self.assertEqual(created.status_code, 201, created.get_data(as_text=True))
         self.assertEqual(created.json["user"]["username"], "parent.one")
+        self.assertEqual(created.json["user"]["timezone_name"], "America/New_York")
+        self.assertEqual(created.json["user"]["calendar_color"], "#3b82f6")
         self.assertEqual(created.json["vault_envelope"], envelope)
+        rejected = self.second.post("/api/auth/register", json={
+            "name": "No Email", "username": "username-only", "password": "sample-password-123",
+            "timezone_name": "Europe/London", "calendar_color": "#8a74ff",
+        })
+        self.assertEqual(rejected.status_code, 400)
         self.assertEqual(self.post(self.first, created.json["csrf"], "/api/auth/logout", {}).status_code, 200)
         logged_in = self.first.post("/api/auth/login", json={
             "identifier": "PARENT.ONE", "password": "sample-password-123",
@@ -75,8 +87,9 @@ class TwoParentFlow(unittest.TestCase):
     def test_encrypted_family_uses_single_use_secure_invite(self):
         envelope = {"v": 1, "salt": "salt", "iv": "iv", "data": "wrapped"}
         first = self.first.post("/api/auth/register", json={
-            "name": "Parent One", "username": "parent.one", "password": "sample-password-123",
-            "vault_envelope": envelope,
+            "name": "Parent One", "email": "parent.one@example.test",
+            "password": "sample-password-123", "vault_envelope": envelope,
+            "timezone_name": "Europe/London", "calendar_color": "#8a74ff",
         }).json
         second = self.register(self.second, "Parent Two", "two@example.test")
         code = first["family"]["invite_code"]
@@ -130,7 +143,10 @@ class TwoParentFlow(unittest.TestCase):
             self.assertEqual(saved_feature["user_id"], a["user"]["id"])
         event = self.post(self.first, a["csrf"], "/api/events", {"title": "School pickup", "category": "school", "start_at": "2026-10-05T15:30"})
         self.assertEqual(event.status_code, 201, event.get_data(as_text=True))
-        self.assertEqual(self.second.get("/api/events").json[0]["title"], "School pickup")
+        shared_event = self.second.get("/api/events").json[0]
+        self.assertEqual(shared_event["title"], "School pickup")
+        self.assertEqual(shared_event["creator_color"], "#8a74ff")
+        self.assertEqual(shared_event["timezone_name"], "Europe/London")
 
         handover = self.post(self.first, a["csrf"], "/api/handovers", {"title": "Friday handover", "scheduled_at": "2026-10-09T17:00"})
         self.assertEqual(handover.status_code, 201, handover.get_data(as_text=True))
@@ -237,7 +253,9 @@ class TwoParentFlow(unittest.TestCase):
         message_notice = self.second.get("/api/notifications").json
         self.assertTrue(any(item["notification_type"] == "message" for item in message_notice["items"]))
 
-        starts = (datetime.now(timezone.utc) + timedelta(minutes=30)).replace(tzinfo=None, second=0, microsecond=0)
+        starts = (datetime.now(ZoneInfo("Europe/London")) + timedelta(minutes=30)).replace(
+            tzinfo=None, second=0, microsecond=0
+        )
         repeat_until = (starts + timedelta(days=2)).date().isoformat()
         payload = {"title": "Medicine", "category": "appointment", "start_at": starts.isoformat(timespec="minutes"),
                    "end_at": "", "notes": "Bring prescription", "reminder_minutes": 60,
@@ -257,9 +275,11 @@ class TwoParentFlow(unittest.TestCase):
         self.assertTrue(all(item["is_recurring"] for item in event_rows if item["id"] == event_id))
 
         creator_notices = self.first.get("/api/notifications").json
-        self.assertTrue(any(item["notification_type"] == "event_reminder" for item in creator_notices["items"]))
+        self.assertFalse(any(item["notification_type"] in {"event_created", "event_reminder"}
+                             for item in creator_notices["items"]))
         other_notices = self.second.get("/api/notifications").json
         self.assertTrue(any(item["notification_type"] == "event_created" for item in other_notices["items"]))
+        self.assertTrue(any(item["notification_type"] == "event_reminder" for item in other_notices["items"]))
 
         payload["title"] = "Updated medicine appointment"
         updated = self.first.put(f"/api/events/{event_id}", json=payload, headers={"X-CSRF-Token": a["csrf"]})
