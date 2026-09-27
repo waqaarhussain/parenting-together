@@ -1,4 +1,4 @@
-var state = { me: null, vault: null, page: "home", cache: {}, chat: null, unread: 0, notificationUnread: 0, messageTarget: null, eventTarget: null, eventTargetAt: null, recordTarget: null, calendarEvents: [], calendarCursor: new Date(), theme: localStorage.getItem("pt-theme") || "system" };
+var state = { me: null, vault: null, page: "home", cache: {}, chat: null, unread: 0, notificationUnread: 0, messageTarget: null, eventTarget: null, eventTargetAt: null, recordTarget: null, calendarEvents: [], calendarCursor: new Date(), calendarSelectedDate: null, theme: localStorage.getItem("pt-theme") || "system" };
 var liveTimer = null;
 var liveBusy = false;
 var lastNotificationRefresh = 0;
@@ -45,25 +45,79 @@ function esc(v) {
     return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[c];
   });
 }
-function fmt(v) {
+function displayTimeZone() {
+  return (state.me && state.me.user && state.me.user.timezone_name) || Intl.DateTimeFormat().resolvedOptions().timeZone || "Europe/London";
+}
+function zoneParts(value, timeZone) {
+  var parts = new Intl.DateTimeFormat("en-CA", {timeZone:timeZone,year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",second:"2-digit",hourCycle:"h23"}).formatToParts(value);
+  var output={};parts.forEach(function(part){if(part.type!=="literal")output[part.type]=Number(part.value);});return output;
+}
+function appDate(v, sourceTimeZone) {
+  if (!v) return null;
+  if (/Z$|[+-]\d\d:\d\d$/.test(String(v))) return new Date(v);
+  if (!sourceTimeZone) return new Date(v);
+  var match=String(v).match(/^(\d{4})-(\d{2})-(\d{2})(?:T| )(\d{2})?:(\d{2})?/);
+  if(!match)return new Date(v);
+  var desired=Date.UTC(Number(match[1]),Number(match[2])-1,Number(match[3]),Number(match[4]||0),Number(match[5]||0));
+  var guess=desired;
+  for(var i=0;i<3;i++){var parts=zoneParts(new Date(guess),sourceTimeZone);var shown=Date.UTC(parts.year,parts.month-1,parts.day,parts.hour,parts.minute,parts.second);guess+=desired-shown;}
+  return new Date(guess);
+}
+function fmt(v, sourceTimeZone) {
   if (!v) return "Not set";
-  var d = new Date(v);
+  var d = appDate(v,sourceTimeZone);
   if (isNaN(d)) return v;
-  return d.toLocaleString([], {day:"numeric",month:"short",hour:"2-digit",minute:"2-digit"});
+  return d.toLocaleString("en-GB", {timeZone:displayTimeZone(),day:"numeric",month:"short",hour:"numeric",minute:"2-digit",hour12:true}).replace(",","").replace(/\b(am|pm)\b/gi,function(x){return x.toUpperCase();});
 }
 function fmtDate(v) {
   if (!v) return "";
   var d = new Date(v);
   if (isNaN(d)) return v;
-  return d.toLocaleDateString([], {day:"numeric",month:"short",year:"numeric"});
+  return d.toLocaleDateString("en-GB", {timeZone:displayTimeZone(),day:"numeric",month:"short",year:"numeric"});
+}
+function localDateTimeValue(value, timeZone) {
+  var parts=zoneParts(value,timeZone||displayTimeZone());
+  return parts.year+"-"+String(parts.month).padStart(2,"0")+"-"+String(parts.day).padStart(2,"0")+"T"+String(parts.hour).padStart(2,"0")+":"+String(parts.minute).padStart(2,"0");
+}
+function dateKey(value, timeZone) {
+  return localDateTimeValue(value,timeZone).slice(0,10);
+}
+function shortDate(value) {
+  var parts=new Intl.DateTimeFormat("en-GB",{timeZone:displayTimeZone(),day:"numeric",month:"short"}).formatToParts(value),day="",month="";
+  parts.forEach(function(part){if(part.type==="day")day=part.value;if(part.type==="month")month=part.value;});
+  return day+" "+month.replace(/^Sept$/,"Sep");
+}
+function shortTime(value) {
+  return value.toLocaleTimeString("en-US",{timeZone:displayTimeZone(),hour:"numeric",minute:"2-digit",hour12:true});
+}
+function eventTimeRange(event) {
+  var start=appDate(event.start_at,event.timezone_name),end=appDate(event.end_at,event.timezone_name);
+  if(!start||isNaN(start))return event.start_at||"Not set";
+  if(!end||isNaN(end))return shortDate(start)+" at "+shortTime(start);
+  var first=shortDate(start)+" at "+shortTime(start);
+  return dateKey(start,displayTimeZone())===dateKey(end,displayTimeZone())?first+" to "+shortTime(end):first+" to "+shortDate(end)+" at "+shortTime(end);
 }
 function initials(name) {
   return (name || "?").split(/\s+/).slice(0,2).map(function(x){return x[0] || "";}).join("").toUpperCase();
 }
 function money(p) { return "£" + ((Number(p)||0)/100).toFixed(2); }
 function status(s) { return '<span class="status '+esc(s)+'">'+esc(s)+'</span>'; }
-function isFutureEvent(startAt) {
-  return new Date(startAt).getTime() > Date.now();
+function isFutureEvent(startAt, sourceTimeZone) {
+  var value=appDate(startAt,sourceTimeZone);
+  return value&&!isNaN(value)&&value.getTime()>Date.now();
+}
+
+function populateTimezoneChoices() {
+  var select=document.getElementById("register-timezone");
+  if(!select)return;
+  var detected=Intl.DateTimeFormat().resolvedOptions().timeZone||"Europe/London";
+  var zones=typeof Intl.supportedValuesOf==="function"?Intl.supportedValuesOf("timeZone"):[
+    "Europe/London","Europe/Dublin","Europe/Paris","Europe/Berlin","America/New_York",
+    "America/Chicago","America/Denver","America/Los_Angeles","Asia/Dubai","Asia/Kolkata",
+    "Asia/Singapore","Asia/Tokyo","Australia/Sydney","Pacific/Auckland"
+  ];
+  if(!zones.includes(detected))zones.unshift(detected);
+  select.innerHTML=zones.map(function(zone){return '<option value="'+esc(zone)+'"'+(zone===detected?' selected':'')+'>'+esc(zone.replace(/_/g," "))+'</option>';}).join("");
 }
 
 function applyTheme() {
@@ -414,27 +468,28 @@ async function getAll() {
 async function renderHome() {
   var d = await getAll();
   var pending = d.handovers.filter(function(x){return x.status==="pending";}).length + d.decisions.filter(function(x){return x.status==="pending";}).length + d.expenses.filter(function(x){return x.status==="pending";}).length;
-  var upcoming=d.events.filter(function(x){return isFutureEvent(x.start_at);}).slice(0,8);
+  var upcoming=d.events.filter(function(x){return isFutureEvent(x.start_at,x.timezone_name);}).slice(0,8);
   var connected = state.me.members.length > 1;
   document.getElementById("page").innerHTML =
     '<div class="page-grid">'+
       '<section class="card welcome-card span-12"><p class="eyebrow">YOUR FAMILY SPACE</p><h3>Hi '+esc(state.me.user.name.split(" ")[0])+'.</h3><p>'+ (connected ? 'Everything shared between both parents stays organised, timestamped and easy to find.' : 'You are in solo mode. Start organising now, then connect the other parent whenever you are ready.') +'</p><div class="quick-actions"><button class="quick-action" id="qa-invite">'+(connected?'Parents connected':'Connect co-parent')+'</button><button class="quick-action" id="qa-child">Add child</button></div></section>'+
       '<div class="home-summary-grid">'+
         '<section class="metric-card"><div class="metric-label">Open items</div><div class="metric-value">'+pending+'</div><div class="metric-note">Handovers, decisions and expenses awaiting action.</div></section>'+
-        '<section class="metric-card"><div class="metric-label">Rules</div><div class="metric-value">'+d.rules.length+'</div><div class="metric-note">Saved agreement rules visible to both parents.</div></section>'+
+        '<button class="metric-card home-card-button" id="home-rules" type="button"><div class="metric-label">Rules</div><div class="metric-value">'+d.rules.length+'</div><div class="metric-note">Saved agreement rules visible to both parents.</div></button>'+
       '</div>'+
       '<section class="card span-12"><div class="card-head"><div><h3>Upcoming events</h3><p>Your next shared plans.</p></div><button class="tiny-button" id="home-calendar">View calendar</button></div>'+listEvents(upcoming)+'</section>'+
     '</div>';
   document.getElementById("qa-invite").onclick=openInviteModal;
   document.getElementById("qa-child").onclick=openChildModal;
   document.getElementById("home-calendar").onclick=function(){navigate("calendar");};
+  document.getElementById("home-rules").onclick=function(){navigate("rules");};
   bindEventLinks();
 }
 
 function listEvents(items) {
   if (!items.length) return '<div class="empty"><strong>Nothing coming up</strong>Add school runs, appointments, clubs or holidays.</div>';
   return '<div class="list">'+items.map(function(e){
-    return '<button class="list-item event-list-item" data-event-open="'+e.id+'" data-event-start="'+esc(e.start_at)+'"><div class="list-main"><div class="list-title">'+esc(e.title)+'</div><div class="list-sub">'+fmt(e.start_at)+' · '+esc(e.category)+(e.is_recurring?' · repeats '+esc(e.recurrence):'')+'</div></div><span class="status">'+esc(e.category)+'</span></button>';
+    return '<button class="list-item event-list-item" style="--event-color:'+esc(e.creator_color||"#8a74ff")+'" data-event-open="'+e.id+'" data-event-start="'+esc(e.start_at)+'"><div class="list-main"><div class="list-title">'+esc(e.title)+'</div><div class="list-sub">'+eventTimeRange(e)+'</div></div></button>';
   }).join("")+'</div>';
 }
 function bindEventLinks(){document.querySelectorAll("[data-event-open]").forEach(function(button){button.onclick=function(){var id=Number(button.dataset.eventOpen),start=button.dataset.eventStart;if(state.page==="calendar"){var event=state.calendarEvents.find(function(item){return item.id===id&&item.start_at===start;})||state.calendarEvents.find(function(item){return item.id===id;});if(event)openEventModal(event);}else openRecordTarget("event",id,start);};});}
@@ -614,10 +669,6 @@ async function renderMessages() {
   refreshLiveState();
 }
 
-function localDateTimeValue(value) {
-  return value.getFullYear()+"-"+String(value.getMonth()+1).padStart(2,"0")+"-"+String(value.getDate()).padStart(2,"0")+"T"+String(value.getHours()).padStart(2,"0")+":"+String(value.getMinutes()).padStart(2,"0");
-}
-
 async function clientRuleWarnings(payload) {
   if(payload.category!=="holiday")return [];
   var rules=await api("/api/rules"),warnings=[];
@@ -634,23 +685,25 @@ async function renderCalendar() {
   var rangeEnd=new Date(start);rangeEnd.setDate(rangeEnd.getDate()+cellCount-1);rangeEnd.setHours(23,59,59,999);
   var events=await api("/api/events?start="+encodeURIComponent(start.toISOString())+"&end="+encodeURIComponent(rangeEnd.toISOString()));
   state.calendarEvents=events;
-  var today=new Date();
+  var today=new Date(),todayKey=dateKey(today,displayTimeZone());
   var cells="";
   for(var i=0;i<cellCount;i++){
     var d=new Date(start);d.setDate(start.getDate()+i);
     var key=d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0");
-    var ev=events.filter(function(x){return String(x.start_at).slice(0,10)===key;});
-    var cls="day"+(d.getMonth()!==m?" other":"")+(d.toDateString()===today.toDateString()?" today":"");
-    cells+='<div class="'+cls+'"><div class="day-num">'+d.getDate()+'</div>'+ev.slice(0,3).map(function(x){var target=state.eventTarget===x.id&&(!state.eventTargetAt||String(x.start_at).slice(0,16)===String(state.eventTargetAt).slice(0,16));return '<button class="event-chip'+(target?' event-target':'')+'" data-event-open="'+x.id+'" data-event-start="'+esc(x.start_at)+'">'+esc(x.title)+'</button>';}).join("")+'</div>';
+    var ev=events.filter(function(x){return dateKey(appDate(x.start_at,x.timezone_name),displayTimeZone())===key;});
+    var selectable=key>=todayKey;
+    var cls="day"+(d.getMonth()!==m?" other":"")+(key===todayKey?" today":"")+(selectable?" selectable":"")+(state.calendarSelectedDate===key?" selected":"");
+    cells+='<div class="'+cls+'"'+(selectable?' data-calendar-date="'+key+'"':'')+'><div class="day-num">'+d.getDate()+'</div>'+ev.slice(0,3).map(function(x){var target=state.eventTarget===x.id&&(!state.eventTargetAt||String(x.start_at).slice(0,16)===String(state.eventTargetAt).slice(0,16));return '<button class="event-chip'+(target?' event-target':'')+'" style="--event-color:'+esc(x.creator_color||"#8a74ff")+'" data-event-open="'+x.id+'" data-event-start="'+esc(x.start_at)+'">'+esc(x.title)+'</button>';}).join("")+'</div>';
   }
-  var defaultStart=new Date();defaultStart.setHours(defaultStart.getHours()+1,defaultStart.getMinutes(),0,0);
-  var defaultEnd=new Date(defaultStart.getTime()+60*60*1000);
-  document.getElementById("page").innerHTML='<div class="calendar-wrap"><section class="calendar-card"><div class="calendar-head"><button class="tiny-button calendar-nav-button" id="cal-prev">‹</button><strong>'+cur.toLocaleDateString([],{month:"long",year:"numeric"})+'</strong><button class="tiny-button calendar-nav-button" id="cal-next">›</button></div><div class="calendar-grid">'+["Mon","Tue","Wed","Thu","Fri","Sat","Sun"].map(function(x){return '<div class="weekday">'+x+'</div>';}).join("")+cells+'</div></section><section class="card quick-event-card"><form id="quick-event-form" class="quick-event-form"><div class="quick-event-heading"><div><h3>Add event</h3><p>Fill it in and add it straight to the calendar.</p></div><button class="tiny-button primary" id="cal-add" type="submit">+ Add</button></div><div class="quick-event-grid"><div class="field quick-title"><label>Title</label><input name="title" required maxlength="200" placeholder="School pickup"></div><div class="field quick-notes"><label>Notes</label><textarea name="notes" placeholder="Optional"></textarea></div><div class="field"><label>Starts</label><div class="quick-date-control"><input type="datetime-local" name="start_at" required value="'+localDateTimeValue(defaultStart)+'"></div></div><div class="field"><label>Ends</label><div class="quick-date-control"><input type="datetime-local" name="end_at" required value="'+localDateTimeValue(defaultEnd)+'"></div></div><div class="field"><label>Reminder (minutes)</label><input type="number" name="reminder_minutes" min="0" max="10080" list="quick-reminder-times" value="60"><datalist id="quick-reminder-times"><option value="0"><option value="15"><option value="30"><option value="60"><option value="120"><option value="1440"><option value="10080"></datalist></div><div class="field"><label>Repeat</label><select name="recurrence"><option value="none">Does not repeat</option><option value="daily">Daily</option><option value="weekly">Weekly</option><option value="monthly">Monthly</option></select></div><div id="quick-repeat-until" class="field quick-repeat-until hidden"><label>Repeat until <span>(optional)</span></label><input type="date" name="recurrence_until"></div></div></form></section></div>';
+  var nextHour=new Date(Date.now()+60*60*1000),defaultStartValue=state.calendarSelectedDate&&state.calendarSelectedDate!==todayKey?state.calendarSelectedDate+"T00:00":localDateTimeValue(nextHour);
+  var defaultEndValue=state.calendarSelectedDate&&state.calendarSelectedDate!==todayKey?state.calendarSelectedDate+"T01:00":localDateTimeValue(new Date(nextHour.getTime()+60*60*1000));
+  document.getElementById("page").innerHTML='<div class="calendar-wrap"><section class="calendar-card"><div class="calendar-head"><button class="tiny-button calendar-nav-button" id="cal-prev">‹</button><strong>'+cur.toLocaleDateString([],{month:"long",year:"numeric"})+'</strong><button class="tiny-button calendar-nav-button" id="cal-next">›</button></div><div class="calendar-grid">'+["Mon","Tue","Wed","Thu","Fri","Sat","Sun"].map(function(x){return '<div class="weekday">'+x+'</div>';}).join("")+cells+'</div></section><section class="card quick-event-card"><form id="quick-event-form" class="quick-event-form"><div class="quick-event-heading"><div><h3>Add event</h3><p>Fill it in and add it straight to the calendar.</p></div><button class="tiny-button primary" id="cal-add" type="submit">+ Add</button></div><div class="quick-event-grid"><div class="field quick-title"><label>Title</label><input name="title" required maxlength="200" placeholder="School pickup"></div><div class="field quick-notes"><label>Notes</label><textarea name="notes" placeholder="Optional"></textarea></div><div class="field"><label>Starts</label><div class="quick-date-control"><input type="datetime-local" name="start_at" required value="'+defaultStartValue+'"></div></div><div class="field"><label>Ends</label><div class="quick-date-control"><input type="datetime-local" name="end_at" required value="'+defaultEndValue+'"></div></div><div class="field"><label>Reminder (minutes)</label><input type="number" name="reminder_minutes" min="0" max="10080" list="quick-reminder-times" value="60"><datalist id="quick-reminder-times"><option value="0"><option value="15"><option value="30"><option value="60"><option value="120"><option value="1440"><option value="10080"></datalist></div><div class="field"><label>Repeat</label><select name="recurrence"><option value="none">Does not repeat</option><option value="daily">Daily</option><option value="weekly">Weekly</option><option value="monthly">Monthly</option></select></div><div id="quick-repeat-until" class="field quick-repeat-until hidden"><label>Repeat until <span>(optional)</span></label><input type="date" name="recurrence_until"></div></div></form></section></div>';
   document.getElementById("cal-prev").onclick=function(){state.calendarCursor=new Date(y,m-1,1);renderCalendar();};
   document.getElementById("cal-next").onclick=function(){state.calendarCursor=new Date(y,m+1,1);renderCalendar();};
   var form=document.getElementById("quick-event-form"),startInput=form.elements.namedItem("start_at"),endInput=form.elements.namedItem("end_at"),repeat=form.elements.namedItem("recurrence"),until=document.getElementById("quick-repeat-until"),endLinked=true;
   endInput.oninput=function(){endLinked=false;};
-  startInput.onchange=function(){if(!endLinked)return;var changed=new Date(startInput.value);if(!isNaN(changed))endInput.value=localDateTimeValue(new Date(changed.getTime()+60*60*1000));};
+  startInput.onchange=function(){if(!endLinked)return;var changed=appDate(startInput.value,displayTimeZone());if(!isNaN(changed))endInput.value=localDateTimeValue(new Date(changed.getTime()+60*60*1000));};
+  document.querySelectorAll("[data-calendar-date]").forEach(function(day){day.onclick=function(e){if(e.target.closest(".event-chip"))return;state.calendarSelectedDate=day.dataset.calendarDate;document.querySelectorAll("[data-calendar-date]").forEach(function(item){item.classList.toggle("selected",item===day);});if(state.calendarSelectedDate===todayKey){var currentStart=new Date(Date.now()+60*60*1000);startInput.value=localDateTimeValue(currentStart);endInput.value=localDateTimeValue(new Date(currentStart.getTime()+60*60*1000));}else{startInput.value=state.calendarSelectedDate+"T00:00";endInput.value=state.calendarSelectedDate+"T01:00";}endLinked=true;};});
   repeat.onchange=function(){until.classList.toggle("hidden",repeat.value==="none");};
   form.onsubmit=async function(e){
     e.preventDefault();
@@ -667,8 +720,9 @@ async function renderCalendar() {
 
 function openEventModal(existing) {
   var editing=existing&&existing.id;
-  var startValue=editing?(existing.series_start_at||existing.start_at):"";
-  var endValue=editing?(existing.series_end_at||""):"";
+  var rawStart=editing?(existing.series_start_at||existing.start_at):"",rawEnd=editing?(existing.series_end_at||""):"";
+  var startValue=editing?localDateTimeValue(appDate(rawStart,existing.timezone_name)):"";
+  var endValue=editing&&rawEnd?localDateTimeValue(appDate(rawEnd,existing.timezone_name)):"";
   var recurrence=editing?(existing.recurrence||"none"):"none";
   var category=editing?(existing.category||"general"):"general";
   function selected(value,current){return value===current?' selected':'';}
@@ -684,7 +738,7 @@ function openEventModal(existing) {
 async function renderHandovers() {
   var items=await api("/api/handovers");
   var uid=state.me.user.id;
-  document.getElementById("page").innerHTML='<div class="page-grid"><section class="card span-12"><div class="card-head"><div><h3>Handover record</h3><p>Make pickups and drop-offs explicit, not buried inside chat.</p></div><button class="primary-button panel-action-button compact-action-button" id="add-handover">New handover</button></div>'+(items.length?'<div class="list">'+items.map(function(x){return '<div class="list-item" data-record-type="handover" data-record-id="'+x.id+'"><div class="list-main"><div class="list-title">'+esc(x.title)+'</div><div class="list-sub">'+fmt(x.scheduled_at)+(x.location?' · '+esc(x.location):'')+' · requested by '+esc(x.creator_name)+(x.response_note?' · '+esc(x.response_note):'')+'</div></div><div class="inline-actions">'+status(x.status)+(x.status==="pending"&&x.creator_id!==uid?'<button class="tiny-button" data-hresp="'+x.id+'" data-status="accepted">Accept</button><button class="tiny-button" data-hresp="'+x.id+'" data-status="declined">Decline</button><button class="tiny-button" data-hresp="'+x.id+'" data-status="countered">Counter</button>':'')+(x.status==="accepted"?'<button class="tiny-button primary" data-complete="'+x.id+'">Mark complete</button>':'')+'</div></div>';}).join("")+'</div>':'<div class="empty"><strong>No handovers yet</strong>Create a structured pickup or drop-off request.</div>')+'</section></div>';
+  document.getElementById("page").innerHTML='<div class="page-grid"><section class="card span-12"><div class="card-head"><div><h3>Handover record</h3><p>Make pickups and drop-offs explicit, not buried inside chat.</p></div><button class="primary-button panel-action-button compact-action-button" id="add-handover">New handover</button></div>'+(items.length?'<div class="list">'+items.map(function(x){return '<div class="list-item" data-record-type="handover" data-record-id="'+x.id+'"><div class="list-main"><div class="list-title">'+esc(x.title)+'</div><div class="list-sub">'+fmt(x.scheduled_at,x.timezone_name)+(x.location?' · '+esc(x.location):'')+' · requested by '+esc(x.creator_name)+(x.response_note?' · '+esc(x.response_note):'')+'</div></div><div class="inline-actions">'+status(x.status)+(x.status==="pending"&&x.creator_id!==uid?'<button class="tiny-button" data-hresp="'+x.id+'" data-status="accepted">Accept</button><button class="tiny-button" data-hresp="'+x.id+'" data-status="declined">Decline</button><button class="tiny-button" data-hresp="'+x.id+'" data-status="countered">Counter</button>':'')+(x.status==="accepted"?'<button class="tiny-button primary" data-complete="'+x.id+'">Mark complete</button>':'')+'</div></div>';}).join("")+'</div>':'<div class="empty"><strong>No handovers yet</strong>Create a structured pickup or drop-off request.</div>')+'</section></div>';
   document.getElementById("add-handover").onclick=function(){openSimpleCreate("handover");};
   document.querySelectorAll("[data-hresp]").forEach(function(b){b.onclick=function(){respondItem("handover",b.dataset.hresp,b.dataset.status);};});
   document.querySelectorAll("[data-complete]").forEach(function(b){b.onclick=async function(){try{await api("/api/handovers/"+b.dataset.complete+"/complete",{method:"POST",json:{}});renderHandovers();toast("Handover completion recorded","success");}catch(e){toast(e.message,"error");}};});
@@ -750,8 +804,8 @@ async function allMessages(){
 }
 function printMessageExport(messages){
   var win=window.open("","_blank");if(!win){toast("Allow pop-ups to export messages.","error");return;}
-  var rows=messages.map(function(m){return '<article><small>'+esc(m.sender_name)+' · '+esc(new Date(m.created_at).toLocaleString())+'</small><p>'+esc(m.body).replace(/\n/g,"<br>")+'</p><code>'+esc(m.record_hash)+'</code></article>';}).join("");
-  win.document.write('<!doctype html><html><head><title>Parenting Together messages</title><style>body{font:14px system-ui;margin:32px;color:#111}h1{font-size:24px}article{padding:14px 0;border-bottom:1px solid #ddd;break-inside:avoid}small,code{color:#666;font-size:10px}p{white-space:normal;line-height:1.5}@media print{button{display:none}}</style></head><body><h1>Parenting Together messages</h1><p>Decrypted locally on this device. Generated '+esc(new Date().toLocaleString())+'.</p><button onclick="print()">Save as PDF / Print</button>'+rows+'</body></html>');
+  var rows=messages.map(function(m){return '<article><small>'+esc(m.sender_name)+' · '+esc(fmt(m.created_at))+'</small><p>'+esc(m.body).replace(/\n/g,"<br>")+'</p><code>'+esc(m.record_hash)+'</code></article>';}).join("");
+  win.document.write('<!doctype html><html><head><title>Parenting Together messages</title><style>body{font:14px system-ui;margin:32px;color:#111}h1{font-size:24px}article{padding:14px 0;border-bottom:1px solid #ddd;break-inside:avoid}small,code{color:#666;font-size:10px}p{white-space:normal;line-height:1.5}@media print{button{display:none}}</style></head><body><h1>Parenting Together messages</h1><p>Decrypted locally on this device. Generated '+esc(new Date().toLocaleString("en-GB",{timeZone:displayTimeZone(),hour12:true}))+'.</p><button onclick="print()">Save as PDF / Print</button>'+rows+'</body></html>');
   win.document.close();setTimeout(function(){win.print();},300);
 }
 
@@ -787,14 +841,14 @@ async function localSearch(query){
   values.forEach(function(rows,index){rows.forEach(function(row){var type=groups[index],title=row.title||row.body||row.summary||type,detail=row.details||row.notes||row.location||row.value_text||row.response_note||row.detail||"";items.push(Object.assign({},row,{type:type,title:title,detail:detail,target_at:type==="event"?row.start_at:null}));});});
   (state.me.children||[]).forEach(function(row){items.push(Object.assign({},row,{type:"child",title:row.name,detail:row.birthday||"Child profile"}));});
   var needle=query.toLocaleLowerCase();
-  return items.filter(function(item){var searchable=Object.values(item).filter(function(value){return value!=null&&typeof value!=="object";}).map(function(value){var text=String(value);var date=new Date(text);if(!isNaN(date)&&/\d{4}-\d{2}/.test(text))text+=" "+date.toLocaleString()+" "+date.toLocaleDateString(undefined,{day:"2-digit",month:"long",year:"numeric"});return text;}).join(" ").toLocaleLowerCase();return searchable.includes(needle);}).sort(function(a,b){return String(b.created_at||b.start_at||"").localeCompare(String(a.created_at||a.start_at||""));}).slice(0,100);
+  return items.filter(function(item){var searchable=Object.values(item).filter(function(value){return value!=null&&typeof value!=="object";}).map(function(value){var text=String(value),sourceZone=item.type==="event"||item.type==="handover"?item.timezone_name:null,date=appDate(text,sourceZone);if(date&&!isNaN(date)&&/\d{4}-\d{2}/.test(text))text+=" "+fmt(text,sourceZone)+" "+fmtDate(date);return text;}).join(" ").toLocaleLowerCase();return searchable.includes(needle);}).sort(function(a,b){return String(b.created_at||b.start_at||"").localeCompare(String(a.created_at||a.start_at||""));}).slice(0,100);
 }
 
 function renderSearch() {
   document.getElementById("page").innerHTML='<div class="search-box"><input id="global-search" class="search-input" autocomplete="off" placeholder="Search words, names, dates, amounts, receipt filenames…"><div id="search-results" class="search-results"><div class="empty"><strong>Search the family record</strong>Messages, events, child profiles, handovers, decisions, expenses, rules and activity.</div></div></div>';
   var input=document.getElementById("global-search"),timer;
   input.focus();
-  input.oninput=function(){clearTimeout(timer);timer=setTimeout(async function(){var q=input.value.trim();if(q.length<2){document.getElementById("search-results").innerHTML='<div class="empty"><strong>Keep typing</strong>Enter at least two characters.</div>';return;}try{var items=await localSearch(q),results=document.getElementById("search-results");results.innerHTML=items.length?'<div class="list">'+items.map(function(x){return '<button class="list-item search-result" data-result-type="'+esc(x.type)+'" data-result-id="'+x.id+'" data-result-value="'+esc(x.target_at||'')+'"><div class="list-main"><div class="search-type">'+esc(x.type)+'</div><div class="list-title">'+esc(x.title)+'</div><div class="list-sub">'+esc(x.detail||"")+' · '+fmt(x.created_at||x.start_at)+'</div></div><span class="result-arrow">›</span></button>';}).join("")+'</div>':'<div class="empty"><strong>No matches</strong>Nothing in the family record matched that search.</div>';results.querySelectorAll("[data-result-type]").forEach(function(button){button.onclick=function(){openRecordTarget(button.dataset.resultType,Number(button.dataset.resultId),button.dataset.resultValue||null);};});}catch(e){toast(e.message,"error");}},260);};
+  input.oninput=function(){clearTimeout(timer);timer=setTimeout(async function(){var q=input.value.trim();if(q.length<2){document.getElementById("search-results").innerHTML='<div class="empty"><strong>Keep typing</strong>Enter at least two characters.</div>';return;}try{var items=await localSearch(q),results=document.getElementById("search-results");results.innerHTML=items.length?'<div class="list">'+items.map(function(x){return '<button class="list-item search-result" data-result-type="'+esc(x.type)+'" data-result-id="'+x.id+'" data-result-value="'+esc(x.target_at||'')+'"><div class="list-main"><div class="search-type">'+esc(x.type)+'</div><div class="list-title">'+esc(x.title)+'</div><div class="list-sub">'+esc(x.detail||"")+' · '+fmt(x.created_at||x.start_at,x.type==="event"?x.timezone_name:null)+'</div></div><span class="result-arrow">›</span></button>';}).join("")+'</div>':'<div class="empty"><strong>No matches</strong>Nothing in the family record matched that search.</div>';results.querySelectorAll("[data-result-type]").forEach(function(button){button.onclick=function(){openRecordTarget(button.dataset.resultType,Number(button.dataset.resultId),button.dataset.resultValue||null);};});}catch(e){toast(e.message,"error");}},260);};
 }
 
 document.querySelectorAll(".auth-tab").forEach(function(b){b.onclick=function(){setAuthTab(b.dataset.authTab);};});
@@ -808,7 +862,8 @@ document.getElementById("search-shortcut").innerHTML=icons.search;
 document.getElementById("search-shortcut").onclick=function(){navigate("search");};
 document.getElementById("notification-button").insertAdjacentHTML("afterbegin",icons.bell);
 document.getElementById("notification-button").onclick=openNotifications;
+populateTimezoneChoices();
 document.getElementById("login-form").onsubmit=async function(e){e.preventDefault();var fd=new FormData(e.target);try{state.me=await api("/api/auth/login",{method:"POST",json:{identifier:fd.get("identifier"),password:fd.get("password")}});await ensureVault();state.me=await api("/api/me");showApp();render();}catch(err){toast(err.message,"error");}};
-document.getElementById("register-form").onsubmit=async function(e){e.preventDefault();var fd=new FormData(e.target);try{var created=await PTVault.create();state.me=await api("/api/auth/register",{method:"POST",json:{name:fd.get("name"),username:fd.get("username"),email:fd.get("email"),password:fd.get("password"),vault_envelope:created.envelope}});state.vault=created.vault;await PTVault.remember(state.me.user.id,state.vault);await recoveryModal(created.code,"Save your recovery phrase");showApp();render();toast("Your encrypted family space is ready","success");}catch(err){toast(err.message,"error");}};
+document.getElementById("register-form").onsubmit=async function(e){e.preventDefault();var fd=new FormData(e.target);try{var created=await PTVault.create();state.me=await api("/api/auth/register",{method:"POST",json:{name:fd.get("name"),email:fd.get("email"),password:fd.get("password"),timezone_name:fd.get("timezone_name"),calendar_color:fd.get("calendar_color"),vault_envelope:created.envelope}});state.vault=created.vault;await PTVault.remember(state.me.user.id,state.vault);await recoveryModal(created.code,"Save your recovery phrase");showApp();render();toast("Your encrypted family space is ready","success");}catch(err){toast(err.message,"error");}};
 document.getElementById("logout-button").onclick=async function(){try{await api("/api/auth/logout",{method:"POST",json:{}});}catch(e){}location.reload();};
 bootstrap();
