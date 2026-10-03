@@ -86,6 +86,16 @@ body:has(.calendar-wrap),body:has(#export-form){height:100dvh;overflow:hidden;ov
   .export-dates input{width:min(100%,205px)}
 }
 
+/* Authentication is intentionally a single focused panel at every width. */
+.auth-shell{grid-template-columns:minmax(0,1fr)}
+.invite-scanner{display:grid;gap:12px;margin-bottom:16px}
+.invite-scanner-frame{position:relative;overflow:hidden;width:min(100%,360px);margin:0 auto;border:1px solid var(--line);border-radius:18px;background:#05070c;aspect-ratio:1}
+.invite-scanner-video{display:block;width:100%;height:100%;object-fit:cover}
+.invite-scanner-guide{position:absolute;inset:16%;border:2px solid #fff;border-radius:18px;box-shadow:0 0 0 999px rgba(5,7,12,.42);pointer-events:none}
+.invite-scanner-status{margin:0;color:var(--muted);font-size:13px;line-height:1.45;text-align:center}
+.invite-scanner-actions{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+@media(max-width:420px){.invite-scanner-actions{grid-template-columns:1fr}}
+
 /* Keep fitted app pages locked even after opening and closing overlays. */
 body.app-page-locked{height:100dvh;overflow:hidden;overscroll-behavior:none}
 body.app-page-locked .app-shell{height:100dvh;min-height:0;overflow:hidden}
