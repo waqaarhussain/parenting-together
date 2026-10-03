@@ -97,6 +97,32 @@ body:has(.calendar-wrap),body:has(#export-form){height:100dvh;overflow:hidden;ov
 .field-help{color:var(--muted);font-size:11px;line-height:1.45}
 @media(max-width:420px){.invite-scanner-actions{grid-template-columns:1fr}}
 
+/* Make the light theme light throughout, including the desktop navigation. */
+html[data-theme="light"]{--sidebar:#fff;--sidebar-text:#101626;--sidebar-muted:#738096;--sidebar-surface:#f0f3f9;--sidebar-line:#e4e9f1;--sidebar-active:#edf0f6}
+html[data-theme="dark"]{--sidebar-muted:#8b98ae;--sidebar-surface:rgba(255,255,255,.055);--sidebar-line:rgba(255,255,255,.08);--sidebar-active:rgba(255,255,255,.075)}
+@media(prefers-color-scheme:light){html[data-theme="system"]{--sidebar:#fff;--sidebar-text:#101626;--sidebar-muted:#738096;--sidebar-surface:#f0f3f9;--sidebar-line:#e4e9f1;--sidebar-active:#edf0f6}}
+@media(prefers-color-scheme:dark){html[data-theme="system"]{--sidebar-muted:#8b98ae;--sidebar-surface:rgba(255,255,255,.055);--sidebar-line:rgba(255,255,255,.08);--sidebar-active:rgba(255,255,255,.075)}}
+.sidebar-brand .brand-mark{background:transparent;border:1px solid var(--sidebar-line);color:var(--sidebar-text);box-shadow:none}
+.sidebar-brand span,.family-card span,.nav-button{color:var(--sidebar-muted)}
+.family-card{border-color:var(--sidebar-line);background:var(--sidebar-surface)}
+.nav-button:hover,.nav-button.active{background:var(--sidebar-active);color:var(--sidebar-text)}
+.sidebar-footer .soft-button{background:var(--sidebar-surface);border-color:var(--sidebar-line);color:var(--sidebar-text);padding:10px 7px;font-size:10px;white-space:nowrap}
+.auth-form>.soft-button{background:transparent}
+.auth-form>.soft-button:hover{background:var(--panel-2)}
+html[data-theme="light"] .welcome-card{background:linear-gradient(120deg,#fff,#eef4ff);color:var(--text)}
+html[data-theme="light"] .welcome-card p{color:var(--muted)}
+html[data-theme="light"] .welcome-card .quick-action{border-color:var(--line);background:var(--panel);color:var(--text)}
+@media(prefers-color-scheme:light){html[data-theme="system"] .welcome-card{background:linear-gradient(120deg,#fff,#eef4ff);color:var(--text)}html[data-theme="system"] .welcome-card p{color:var(--muted)}html[data-theme="system"] .welcome-card .quick-action{border-color:var(--line);background:var(--panel);color:var(--text)}}
+
+/* Desktop content begins closer to the sidebar and fitted pages use all available height. */
+@media(min-width:761px){
+  .topbar{padding-inline:28px}
+  .page{padding:28px;max-width:none}
+  .topbar-page-label,.topbar-actions{transform:translateY(6px)}
+  body.view-messages .page{padding:20px 28px 24px}
+  body.view-messages .chat-shell{height:100%;min-height:0}
+}
+
 /* Keep fitted app pages locked even after opening and closing overlays. */
 body.app-page-locked{height:100dvh;overflow:hidden;overscroll-behavior:none}
 body.app-page-locked .app-shell{height:100dvh;min-height:0;overflow:hidden}

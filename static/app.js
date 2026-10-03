@@ -123,14 +123,15 @@ function populateTimezoneChoices() {
 function applyTheme() {
   document.documentElement.setAttribute("data-theme", state.theme);
   localStorage.setItem("pt-theme", state.theme);
-  var label = state.theme === "dark" ? "Dark" : state.theme === "light" ? "Light" : "System";
-  var icon = state.theme === "dark" ? icons.moon : icons.sun;
+  var dark = state.theme === "dark" || (state.theme === "system" && window.matchMedia("(prefers-color-scheme: dark)").matches);
+  var icon = dark ? icons.sun : icons.moon;
   document.querySelectorAll(".theme-toggle").forEach(function(b){ b.innerHTML = icon; });
   var sb = document.getElementById("sidebar-theme");
-  if (sb) sb.textContent = label + " theme";
+  if (sb) sb.textContent = dark ? "Switch to light theme" : "Switch to dark theme";
 }
 function cycleTheme() {
-  state.theme = state.theme === "system" ? "light" : state.theme === "light" ? "dark" : "system";
+  var dark = state.theme === "dark" || (state.theme === "system" && window.matchMedia("(prefers-color-scheme: dark)").matches);
+  state.theme = dark ? "light" : "dark";
   applyTheme();
 }
 
@@ -177,7 +178,7 @@ async function decryptTree(value) {
 function chooseVaultPasswordModal(heading) {
   return new Promise(function(resolve){
     document.body.classList.add("modal-required");
-    openModal('<div class="recovery-panel"><p class="eyebrow">PRIVATE FAMILY VAULT</p><h3>'+esc(heading||"Choose a vault password")+'</h3><p>Use this password to unlock encrypted records after moving to a new device, resetting a device, or clearing browser data. It can be the same as your account password.</p><p class="vault-unlock-note">Keep it safe. We cannot reset it or restore your encrypted records without it.</p><form id="choose-vault-password" class="form-stack"><div class="field"><label>Vault password</label><input name="password" type="password" minlength="8" autocomplete="new-password" required placeholder="At least 8 characters"></div><div class="field"><label>Confirm vault password</label><input name="confirm" type="password" minlength="8" autocomplete="new-password" required placeholder="Enter it again"></div><button class="primary-button wide" type="submit">Save vault password</button></form></div>',function(){
+    openModal('<div class="recovery-panel"><p class="eyebrow">PRIVATE FAMILY VAULT</p><h3>'+esc(heading||"Choose a vault password")+'</h3><p>Use this password to unlock encrypted records after moving to a new device, resetting a device, or clearing browser data. It can be the same as your account password.</p><p class="vault-unlock-note">Keep it safe. We cannot reset it or restore your encrypted records without it.</p><form id="choose-vault-password" class="form-stack"><div class="field"><label>Vault password</label><input name="password" type="password" minlength="8" autocomplete="new-password" required placeholder="At least 8 characters"></div><div class="field"><label>Confirm vault password</label><input name="confirm" type="password" minlength="8" autocomplete="new-password" required></div><button class="primary-button wide" type="submit">Save vault password</button></form></div>',function(){
       document.getElementById("choose-vault-password").onsubmit=function(e){e.preventDefault();var fd=new FormData(e.target),password=String(fd.get("password")||""),confirm=String(fd.get("confirm")||"");if(password.length<8){toast("Your vault password must be at least 8 characters.","error");return;}if(password!==confirm){toast("The vault passwords do not match.","error");return;}closeModal(true);resolve(password);};
     });
   });
