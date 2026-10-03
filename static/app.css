@@ -98,6 +98,10 @@ body:has(.calendar-wrap),body:has(#export-form){height:100dvh;overflow:hidden;ov
 @media(max-width:420px){.invite-scanner-actions{grid-template-columns:1fr}}
 
 /* Make the light theme light throughout, including the desktop navigation. */
+.topbar-actions{position:relative}
+.account-menu{position:absolute;top:calc(100% + 12px);right:0;width:220px;max-width:calc(100vw - 32px);padding:10px;display:flex;flex-direction:column;gap:8px;background:var(--panel);border:1px solid var(--line);border-radius:16px;box-shadow:var(--shadow);z-index:30}
+.account-menu .soft-button{text-align:left;white-space:nowrap;font-size:13px}
+.avatar:focus-visible{outline:2px solid var(--primary);outline-offset:3px}
 html[data-theme="light"]{--sidebar:#fff;--sidebar-text:#101626;--sidebar-muted:#738096;--sidebar-surface:#f0f3f9;--sidebar-line:#e4e9f1;--sidebar-active:#edf0f6}
 html[data-theme="dark"]{--sidebar-muted:#8b98ae;--sidebar-surface:rgba(255,255,255,.055);--sidebar-line:rgba(255,255,255,.08);--sidebar-active:rgba(255,255,255,.075)}
 @media(prefers-color-scheme:light){html[data-theme="system"]{--sidebar:#fff;--sidebar-text:#101626;--sidebar-muted:#738096;--sidebar-surface:#f0f3f9;--sidebar-line:#e4e9f1;--sidebar-active:#edf0f6}}
