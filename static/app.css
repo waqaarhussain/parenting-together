@@ -94,6 +94,7 @@ body:has(.calendar-wrap),body:has(#export-form){height:100dvh;overflow:hidden;ov
 .invite-scanner-guide{position:absolute;inset:16%;border:2px solid #fff;border-radius:18px;box-shadow:0 0 0 999px rgba(5,7,12,.42);pointer-events:none}
 .invite-scanner-status{margin:0;color:var(--muted);font-size:13px;line-height:1.45;text-align:center}
 .invite-scanner-actions{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.field-help{color:var(--muted);font-size:11px;line-height:1.45}
 @media(max-width:420px){.invite-scanner-actions{grid-template-columns:1fr}}
 
 /* Keep fitted app pages locked even after opening and closing overlays. */
