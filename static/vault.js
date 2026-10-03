@@ -75,45 +75,48 @@
     return {lookup:b64(lookup), key:key};
   }
 
-  function recoveryCode() {
-    var parts = [];
-    while (parts.length < 16) {
-      var values = new Uint16Array(32);
-      crypto.getRandomValues(values);
-      for (var i = 0; i < values.length && parts.length < 16; i += 1) {
-        if (values[i] < 65000) parts.push(String(values[i] % 1000).padStart(3, "0"));
-      }
-    }
-    return parts.join(" ");
-  }
-
   function normaliseCode(value) {
     return String(value || "").replace(/\D/g, "");
   }
 
-  async function recoveryKey(code, salt) {
-    if (normaliseCode(code).length !== 48) throw new Error("Enter all 16 recovery phrase groups.");
-    var material = await crypto.subtle.importKey("raw", enc.encode(normaliseCode(code)), "PBKDF2", false, ["deriveKey"]);
+  function secretType(envelope) {
+    return envelope && envelope.v === 2 ? "password" : "phrase";
+  }
+
+  function validateSecret(value, type) {
+    value = String(value || "");
+    if (type === "phrase") {
+      if (normaliseCode(value).length !== 48) throw new Error("Enter all 16 recovery phrase groups.");
+      return normaliseCode(value);
+    }
+    if (value.length < 8) throw new Error("Your vault password must be at least 8 characters.");
+    return value;
+  }
+
+  async function recoveryKey(value, salt, type) {
+    var material = await crypto.subtle.importKey("raw", enc.encode(validateSecret(value, type)), "PBKDF2", false, ["deriveKey"]);
     return crypto.subtle.deriveKey(
       {name:"PBKDF2", salt:salt, iterations:600000, hash:"SHA-256"}, material,
       {name:"AES-GCM", length:256}, false, ["encrypt", "decrypt"]
     );
   }
 
-  async function wrap(raw, code) {
-    var salt = randomBytes(16), iv = randomBytes(12), key = await recoveryKey(code, salt);
+  async function wrap(raw, value, type) {
+    type = type || "password";
+    var salt = randomBytes(16), iv = randomBytes(12), key = await recoveryKey(value, salt, type);
     var data = await crypto.subtle.encrypt({name:"AES-GCM", iv:iv}, key, raw);
-    return {v:1, kdf:"PBKDF2-SHA256", iterations:600000, salt:b64(salt), iv:b64(iv), data:b64(data)};
+    return {v:type === "password" ? 2 : 1, kdf:"PBKDF2-SHA256", iterations:600000, salt:b64(salt), iv:b64(iv), data:b64(data)};
   }
 
-  async function unwrap(envelope, code) {
+  async function unwrap(envelope, value) {
+    var type = secretType(envelope);
     try {
-      var key = await recoveryKey(code, unb64(envelope.salt));
+      var key = await recoveryKey(value, unb64(envelope.salt), type);
       return new Uint8Array(await crypto.subtle.decrypt(
         {name:"AES-GCM", iv:unb64(envelope.iv)}, key, unb64(envelope.data)
       ));
     } catch (error) {
-      throw new Error("That recovery phrase is not correct.");
+      throw new Error(type === "password" ? "That vault password is not correct." : "That recovery phrase is not correct.");
     }
   }
 
@@ -163,11 +166,12 @@
     }
   }
 
-  async function rememberRecovery(userId, code) {
-    if (normaliseCode(code).length !== 48) throw new Error("Enter all 16 recovery phrase groups.");
+  async function rememberRecovery(userId, value, type) {
+    type = type || "password";
+    validateSecret(value, type);
     var key = await deviceKey(userId), iv = randomBytes(12);
-    var data = await crypto.subtle.encrypt({name:"AES-GCM", iv:iv}, key, enc.encode(code));
-    await storeValue("recovery:" + userId, {v:1, iv:b64(iv), data:b64(data)});
+    var data = await crypto.subtle.encrypt({name:"AES-GCM", iv:iv}, key, enc.encode(value));
+    await storeValue("recovery:" + userId, {v:2, type:type, iv:b64(iv), data:b64(data)});
   }
 
   async function recovery(userId) {
@@ -175,7 +179,7 @@
     if (!saved) return null;
     try {
       var key = await deviceKey(userId);
-      return dec.decode(await crypto.subtle.decrypt({name:"AES-GCM", iv:unb64(saved.iv)}, key, unb64(saved.data)));
+      return {value:dec.decode(await crypto.subtle.decrypt({name:"AES-GCM", iv:unb64(saved.iv)}, key, unb64(saved.data))), type:saved.type || "phrase"};
     } catch (_) {
       return null;
     }
@@ -230,9 +234,9 @@
     };
   }
 
-  async function create() {
-    var raw = randomBytes(32), code = recoveryCode();
-    return {vault:await vaultFromRaw(raw), code:code, envelope:await wrap(raw, code)};
+  async function create(password) {
+    var raw = randomBytes(32);
+    return {vault:await vaultFromRaw(raw), envelope:await wrap(raw, password, "password")};
   }
 
   async function load(userId) {
@@ -240,11 +244,15 @@
     return raw ? vaultFromRaw(raw) : null;
   }
 
-  async function unlock(userId, envelope, code) {
-    var raw = await unwrap(envelope, code);
+  async function unlock(userId, envelope, value) {
+    var type=secretType(envelope),raw = await unwrap(envelope, value);
     await remember(userId, raw);
-    await rememberRecovery(userId, code);
+    await rememberRecovery(userId, value, type);
     return vaultFromRaw(raw);
+  }
+
+  async function rewrap(vault, password) {
+    return wrap(vault.raw, password, "password");
   }
 
   async function createInvite(vault) {
@@ -271,13 +279,14 @@
       throw new Error("That invite code is incorrect or has expired.");
     }
     if (raw.length !== 32) throw new Error("This secure invite is invalid.");
-    var recoveryValue = existingRecovery || recoveryCode(), envelope = await wrap(raw, recoveryValue);
-    return {vault:await vaultFromRaw(raw), code:recoveryValue, envelope:envelope};
+    if (!existingRecovery || !existingRecovery.value) throw new Error("Enter your vault password before joining.");
+    var envelope = await wrap(raw, existingRecovery.value, existingRecovery.type || "password");
+    return {vault:await vaultFromRaw(raw), secret:existingRecovery, envelope:envelope};
   }
 
   async function rememberVault(userId, vault) { await remember(userId, vault.raw); }
 
-  window.PTVault = {create:create, load:load, unlock:unlock, createInvite:createInvite,
+  window.PTVault = {create:create, load:load, unlock:unlock, rewrap:rewrap, createInvite:createInvite,
     inviteLookup:inviteLookup, acceptInvite:acceptInvite, remember:rememberVault,
     rememberRecovery:rememberRecovery, recovery:recovery, prefix:PREFIX};
 }());
