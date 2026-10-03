@@ -177,7 +177,7 @@ body.view-calendar .page{overflow:hidden}
   .topbar-actions .avatar{width:40px;height:40px;border-radius:12px;font-size:14px}
   .mobile-nav{grid-template-columns:repeat(7,minmax(0,1fr));column-gap:2px;padding-left:max(5px,env(safe-area-inset-left));padding-right:max(5px,env(safe-area-inset-right))}
   .mobile-nav button{min-width:0;gap:2px;font-size:7px;letter-spacing:-.02em}
-  .mobile-nav button svg{width:24px;height:24px}
+  .mobile-nav button svg{width:30px;height:30px}
   .mobile-nav button span:not(.unread-badge){max-width:100%;overflow:hidden;text-overflow:ellipsis}
   .page:has(.calendar-wrap) .calendar-card{border-bottom:1px solid var(--line)}
   .page:has(.calendar-wrap) .calendar-wrap{height:100%;min-height:0;grid-template-rows:minmax(0,65%) minmax(0,35%);overflow:hidden}
@@ -208,4 +208,11 @@ body.view-calendar .page{overflow:hidden}
   html.standalone .page:has(#export-form),
   html.standalone .page:has(.chat-shell){height:calc(100dvh - 138px - env(safe-area-inset-top))}
   html.standalone body.message-keyboard-open .page:has(.chat-shell){height:calc(100dvh - 70px - env(safe-area-inset-top))}
+}
+
+/* Tablet PWAs use the desktop sidebar, but still sit beneath the iOS status bar. */
+@media(min-width:761px){
+  html.standalone .topbar{height:calc(82px + env(safe-area-inset-top));padding-top:env(safe-area-inset-top)}
+  html.standalone .sidebar{height:100dvh;padding-top:calc(22px + env(safe-area-inset-top));padding-bottom:calc(22px + env(safe-area-inset-bottom))}
+  html.standalone body.app-page-locked .page{height:calc(100dvh - 82px - env(safe-area-inset-top))}
 }
