@@ -248,6 +248,7 @@ function openModal(html, onReady) {
 }
 function closeModal(force) {
   if(document.body.classList.contains("modal-required")&&!force)return;
+  if(stopInviteScanner){stopInviteScanner();stopInviteScanner=null;}
   document.getElementById("modal").classList.add("hidden");
   document.body.classList.remove("modal-open");
   document.body.classList.remove("modal-required");
@@ -529,6 +530,79 @@ function drawInviteQr(value) {
   for(var row=0;row<count;row++)for(var col=0;col<count;col++)if(qr.isDark(row,col))context.fillRect((col+quiet)*cell,(row+quiet)*cell,cell,cell);
 }
 
+var stopInviteScanner=null;
+
+function inviteCodeFromQr(value) {
+  var text=String(value||'').trim();
+  try{
+    var url=new URL(text,location.origin),params=new URLSearchParams(url.hash.replace(/^#/,''));
+    if(params.get('invite'))text=params.get('invite');
+  }catch(_){}
+  var compact=text.toUpperCase().replace(/[^2-9A-HJ-NP-Z]/g,'');
+  if(compact.length!==24)throw new Error('That QR code does not contain a valid invite code.');
+  return compact.match(/.{1,4}/g).join('-');
+}
+
+function scanInviteQr(form) {
+  if(!window.jsQR){toast('QR scanner is unavailable on this device.','error');return;}
+  if(stopInviteScanner){stopInviteScanner();stopInviteScanner=null;}
+  var input=form.elements.namedItem('code');
+  form.classList.add('hidden');
+  form.insertAdjacentHTML('beforebegin','<section class="invite-scanner"><div class="invite-scanner-frame"><video class="invite-scanner-video" autoplay muted playsinline></video><span class="invite-scanner-guide" aria-hidden="true"></span></div><p class="invite-scanner-status">Point the camera at the invite QR code.</p><input class="invite-scanner-file hidden" type="file" accept="image/*" capture="environment"><div class="invite-scanner-actions"><button class="soft-button invite-scanner-photo" type="button">Choose QR image</button><button class="soft-button invite-scanner-cancel" type="button">Cancel</button></div></section>');
+  var panel=form.previousElementSibling,video=panel.querySelector('video'),status=panel.querySelector('.invite-scanner-status'),fileInput=panel.querySelector('.invite-scanner-file');
+  var canvas=document.createElement('canvas'),context=canvas.getContext('2d',{willReadFrequently:true}),stream=null,frame=null,lastScan=0,active=true;
+  function cleanup(){
+    if(!active)return;
+    active=false;
+    if(frame)cancelAnimationFrame(frame);
+    if(stream)stream.getTracks().forEach(function(track){track.stop();});
+    if(panel.isConnected)panel.remove();
+    form.classList.remove('hidden');
+  }
+  stopInviteScanner=cleanup;
+  function finish(value){
+    try{
+      input.value=inviteCodeFromQr(value);
+      cleanup();stopInviteScanner=null;input.focus();toast('Invite QR code scanned','success');
+    }catch(error){status.textContent=error.message;}
+  }
+  function readPixels(width,height,draw){
+    if(!active)return false;
+    var scale=Math.min(1,1600/Math.max(width,height)),w=Math.max(1,Math.round(width*scale)),h=Math.max(1,Math.round(height*scale));
+    canvas.width=w;canvas.height=h;draw(context,w,h);
+    var image=context.getImageData(0,0,w,h),result=jsQR(image.data,w,h,{inversionAttempts:'attemptBoth'});
+    if(result&&result.data){finish(result.data);return true;}
+    return false;
+  }
+  function tick(time){
+    if(!active)return;
+    if(video.readyState>=2&&video.videoWidth&&time-lastScan>120){
+      lastScan=time;
+      if(readPixels(video.videoWidth,video.videoHeight,function(ctx,w,h){ctx.drawImage(video,0,0,w,h);}))return;
+    }
+    frame=requestAnimationFrame(tick);
+  }
+  panel.querySelector('.invite-scanner-cancel').onclick=function(){cleanup();stopInviteScanner=null;};
+  panel.querySelector('.invite-scanner-photo').onclick=function(){fileInput.click();};
+  fileInput.onchange=function(){
+    var file=fileInput.files&&fileInput.files[0];if(!file)return;
+    status.textContent='Reading QR image…';
+    var objectUrl=URL.createObjectURL(file),image=new Image();
+    image.onload=function(){
+      var found=readPixels(image.naturalWidth,image.naturalHeight,function(ctx,w,h){ctx.drawImage(image,0,0,w,h);});
+      URL.revokeObjectURL(objectUrl);if(!found)status.textContent='No invite QR code found in that image. Try another one.';
+    };
+    image.onerror=function(){URL.revokeObjectURL(objectUrl);status.textContent='That image could not be opened.';};
+    image.src=objectUrl;
+  };
+  if(navigator.mediaDevices&&navigator.mediaDevices.getUserMedia){
+    navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:'environment'}},audio:false}).then(function(camera){
+      if(!active){camera.getTracks().forEach(function(track){track.stop();});return;}
+      stream=camera;video.srcObject=camera;return video.play();
+    }).then(function(){if(active)frame=requestAnimationFrame(tick);}).catch(function(){status.textContent='Camera access was unavailable. Choose a QR image instead.';});
+  }else status.textContent='Live camera scanning is unavailable. Choose a QR image instead.';
+}
+
 function requestExistingRecovery() {
   return new Promise(function(resolve,reject){
     document.body.classList.add('modal-required');
@@ -544,6 +618,8 @@ function bindJoinFamilyForm(prefillCode) {
   var form=document.getElementById('join-family-form');
   if(!form)return;
   if(prefillCode)form.elements.namedItem('code').value=prefillCode;
+  var scanButton=form.querySelector('[data-scan-invite]');
+  if(scanButton)scanButton.onclick=function(){scanInviteQr(form);};
   form.onsubmit=async function(e){
     e.preventDefault();
     var button=e.target.querySelector('button[type="submit"]'),code=String(new FormData(e.target).get('code')||'').trim();
@@ -569,14 +645,14 @@ async function openInviteModal(prefillCode) {
   var connected = state.me.members.length>1;
   if(connected){openModal('<h3>Parents connected</h3><p>'+state.me.members.map(function(member){return esc(member.name);}).join(' and ')+' are connected to this encrypted family space.</p>');return;}
   if(prefillCode){
-    openModal('<h3>Join family space</h3><p>Check the invite code, then join this encrypted family space.</p><form id="join-family-form" class="form-stack"><div class="field"><label>Secure invite code</label><input name="code" class="invite-entry" autocomplete="off" autocapitalize="characters" spellcheck="false" required placeholder="ABCD-EFGH-JKLM-NPQR-STUV-WXYZ"></div><button class="primary-button" type="submit">Join family space</button></form>',function(){bindJoinFamilyForm(prefillCode);});
+    openModal('<h3>Join family space</h3><p>Check the invite code, then join this encrypted family space.</p><form id="join-family-form" class="form-stack"><div class="field"><label>Secure invite code</label><input name="code" class="invite-entry" autocomplete="off" autocapitalize="characters" spellcheck="false" required placeholder="ABCD-EFGH-JKLM-NPQR-STUV-WXYZ"></div><button class="soft-button wide" data-scan-invite type="button">Scan QR code</button><button class="primary-button" type="submit">Join family space</button></form>',function(){bindJoinFamilyForm(prefillCode);});
     return;
   }
   openModal('<h3>Connect your co-parent</h3><p>Creating a single-use encrypted invite code…</p>');
   try{
     var invitation=await PTVault.createInvite(state.vault);
     await api('/api/family/invite',{method:'POST',json:{lookup:invitation.lookup,payload:invitation.payload}});
-    document.getElementById('modal-content').innerHTML='<h3>Connect your co-parent</h3><p>Send this complete code privately. It expires after seven days and stops working as soon as it is used.</p><div class="secure-invite"><strong class="secure-invite-code">'+esc(invitation.code)+'</strong><small>Single use · end-to-end encrypted · no approval required</small></div><button class="soft-button wide" id="share-invite">Share invite code</button><button class="soft-button wide" id="copy-invite">Copy invite code</button><button class="soft-button wide" id="show-invite-qr">Show QR code</button><div id="invite-qr-panel" class="invite-qr-panel hidden"><canvas id="invite-qr-canvas" aria-label="Invite QR code"></canvas><small>Scanning opens the app with this code ready to join.</small></div><div class="invite-divider"><span>or enter a code you received</span></div><form id="join-family-form" class="form-stack"><div class="field"><label>Secure invite code</label><input name="code" class="invite-entry" autocomplete="off" autocapitalize="characters" spellcheck="false" required placeholder="ABCD-EFGH-JKLM-NPQR-STUV-WXYZ"></div><button class="primary-button" type="submit">Join family space</button></form>';
+    document.getElementById('modal-content').innerHTML='<h3>Connect your co-parent</h3><p>Send this complete code privately. It expires after seven days and stops working as soon as it is used.</p><div class="secure-invite"><strong class="secure-invite-code">'+esc(invitation.code)+'</strong><small>Single use · end-to-end encrypted · no approval required</small></div><button class="soft-button wide" id="share-invite">Share invite code</button><button class="soft-button wide" id="copy-invite">Copy invite code</button><button class="soft-button wide" id="show-invite-qr">Show QR code</button><div id="invite-qr-panel" class="invite-qr-panel hidden"><canvas id="invite-qr-canvas" aria-label="Invite QR code"></canvas><small>Scanning opens the app with this code ready to join.</small></div><div class="invite-divider"><span>or enter or scan a code you received</span></div><form id="join-family-form" class="form-stack"><div class="field"><label>Secure invite code</label><input name="code" class="invite-entry" autocomplete="off" autocapitalize="characters" spellcheck="false" required placeholder="ABCD-EFGH-JKLM-NPQR-STUV-WXYZ"></div><button class="soft-button wide" data-scan-invite type="button">Scan QR code</button><button class="primary-button" type="submit">Join family space</button></form>';
     document.getElementById('copy-invite').onclick=function(){navigator.clipboard.writeText(invitation.code);toast('Invite code copied','success');};
     document.getElementById('share-invite').onclick=async function(){if(navigator.share){try{await navigator.share({text:invitation.code});}catch(_){}}else{await navigator.clipboard.writeText(invitation.code);toast('Invite code copied','success');}};
     document.getElementById('show-invite-qr').onclick=function(){var panel=document.getElementById('invite-qr-panel'),showing=panel.classList.contains('hidden');panel.classList.toggle('hidden',!showing);this.textContent=showing?'Hide QR code':'Show QR code';if(showing)drawInviteQr(location.origin+'/#invite='+encodeURIComponent(invitation.code));};

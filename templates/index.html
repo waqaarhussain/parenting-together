@@ -18,17 +18,6 @@
 </head>
 <body>
   <div id="auth-view" class="auth-shell">
-    <section class="auth-brand">
-      <div class="brand-mark large">PT</div>
-      <div>
-        <p class="eyebrow">CALM. CLEAR. ORGANISED.</p>
-        <h1>Parenting together,<br>without the chaos.</h1>
-        <p class="hero-copy">Messages that cannot quietly disappear. Shared plans everyone can see. Decisions, expenses and handovers kept in one calm timeline.</p>
-      </div>
-      <div class="auth-pills">
-        <span>Messages stay on record</span><span>Shared calendar</span><span>Evidence timeline</span><span>Structured decisions</span>
-      </div>
-    </section>
     <section class="auth-panel">
       <button id="auth-theme" class="icon-button theme-toggle" aria-label="Toggle theme"></button>
       <div class="auth-card">
@@ -85,6 +74,7 @@
   <div id="toast" class="toast hidden"></div>
   <script>window.PT_APP_VERSION = {{ app_version|tojson }};</script>
   <script src="/static/qrcode.js?v={{ app_version }}"></script>
+  <script src="/static/jsqr.js?v={{ app_version }}"></script>
   <script src="/static/vault.js?v={{ app_version }}"></script>
   <script src="/static/app.js?v={{ app_version }}"></script>
 </body>
