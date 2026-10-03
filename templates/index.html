@@ -34,10 +34,12 @@
           <div class="field"><label>Your name</label><input name="name" required placeholder="Alex"></div>
           <div class="field"><label>Email</label><input name="email" type="email" autocomplete="email" required placeholder="you@example.com"></div>
           <div class="field"><label>Password</label><input name="password" minlength="8" type="password" autocomplete="new-password" required placeholder="At least 8 characters"></div>
+          <div class="field"><label>Vault password</label><input name="vault_password" minlength="8" type="password" autocomplete="new-password" required placeholder="At least 8 characters"><small class="field-help">This unlocks your encrypted records on a new device. It can be the same as your account password.</small></div>
+          <div class="field"><label>Confirm vault password</label><input name="vault_password_confirm" minlength="8" type="password" autocomplete="new-password" required placeholder="Enter it again"></div>
           <div class="field"><label>Timezone</label><select id="register-timezone" name="timezone_name" required></select></div>
           <div class="field"><label>Calendar event colour</label><select name="calendar_color" required><option value="#8a74ff">🟣 Purple</option><option value="#3b82f6">🔵 Blue</option><option value="#14b8a6">🟦 Teal</option><option value="#22c55e">🟢 Green</option><option value="#f97316">🟠 Orange</option><option value="#ec4899">🩷 Pink</option></select></div>
           <button class="primary-button wide" type="submit">Create family space</button>
-          <p class="microcopy">You can use it solo immediately, or invite the other parent afterwards.</p>
+          <p class="microcopy">Keep your vault password safe. We cannot reset it or restore encrypted records without it.</p>
         </form>
       </div>
     </section>
