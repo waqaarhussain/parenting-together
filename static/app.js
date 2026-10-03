@@ -128,6 +128,8 @@ function applyTheme() {
   document.querySelectorAll(".theme-toggle").forEach(function(b){ b.innerHTML = icon; });
   var sb = document.getElementById("sidebar-theme");
   if (sb) sb.textContent = dark ? "Switch to light theme" : "Switch to dark theme";
+  var accountTheme = document.getElementById("account-theme");
+  if (accountTheme) accountTheme.textContent = dark ? "Switch to light theme" : "Switch to dark theme";
 }
 function cycleTheme() {
   var dark = state.theme === "dark" || (state.theme === "system" && window.matchMedia("(prefers-color-scheme: dark)").matches);
@@ -1054,6 +1056,20 @@ document.getElementById("notification-button").onclick=openNotifications;
 populateTimezoneChoices();
 document.getElementById("login-form").onsubmit=async function(e){e.preventDefault();var fd=new FormData(e.target);try{state.me=await api("/api/auth/login",{method:"POST",json:{identifier:fd.get("identifier"),password:fd.get("password")}});await ensureVault();state.me=await api("/api/me");showApp();await render();openPendingInvite();}catch(err){toast(err.message,"error");}};
 document.getElementById("register-form").onsubmit=async function(e){e.preventDefault();var fd=new FormData(e.target),vaultPassword=String(fd.get("vault_password")||""),vaultConfirm=String(fd.get("vault_password_confirm")||"");if(vaultPassword.length<8){toast("Your vault password must be at least 8 characters.","error");return;}if(vaultPassword!==vaultConfirm){toast("The vault passwords do not match.","error");return;}try{var created=await PTVault.create(vaultPassword);state.me=await api("/api/auth/register",{method:"POST",json:{name:fd.get("name"),email:fd.get("email"),password:fd.get("password"),timezone_name:fd.get("timezone_name"),calendar_color:fd.get("calendar_color"),vault_envelope:created.envelope}});state.vault=created.vault;await PTVault.remember(state.me.user.id,state.vault);await PTVault.rememberRecovery(state.me.user.id,vaultPassword,"password");showApp();await render();openPendingInvite();toast("Your encrypted family space is ready","success");}catch(err){toast(err.message,"error");}};
-document.getElementById("logout-button").onclick=async function(){try{await api("/api/auth/logout",{method:"POST",json:{}});}catch(e){}location.reload();};
+function closeAccountMenu(){
+  document.getElementById("account-menu").classList.add("hidden");
+  document.getElementById("user-avatar").setAttribute("aria-expanded","false");
+}
+document.getElementById("user-avatar").onclick=function(){
+  var menu=document.getElementById("account-menu"),opening=menu.classList.contains("hidden");
+  menu.classList.toggle("hidden",!opening);
+  this.setAttribute("aria-expanded",String(opening));
+};
+document.getElementById("account-theme").onclick=function(){cycleTheme();closeAccountMenu();document.getElementById("user-avatar").focus();};
+document.addEventListener("click",function(e){if(!e.target.closest("#account-menu")&&!e.target.closest("#user-avatar"))closeAccountMenu();});
+document.addEventListener("keydown",function(e){if(e.key==="Escape"&&!document.getElementById("account-menu").classList.contains("hidden")){closeAccountMenu();document.getElementById("user-avatar").focus();}});
+async function signOut(){try{await api("/api/auth/logout",{method:"POST",json:{}});}catch(e){}location.reload();}
+document.getElementById("logout-button").onclick=signOut;
+document.getElementById("account-signout").onclick=signOut;
 capturePendingInvite();
 bootstrap();
