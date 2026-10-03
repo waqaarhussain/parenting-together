@@ -49,6 +49,18 @@ class TwoParentFlow(unittest.TestCase):
         self.assertIn(f'/static/app.css?v={version.json["version"]}', page.get_data(as_text=True))
         self.assertIn(f'/static/app.js?v={version.json["version"]}', page.get_data(as_text=True))
         self.assertIn(f'/static/vault.js?v={version.json["version"]}', page.get_data(as_text=True))
+        self.assertIn('name="vault_password"', page.get_data(as_text=True))
+        self.assertIn('name="vault_password_confirm"', page.get_data(as_text=True))
+
+    def test_password_wrapped_vault_envelope_is_accepted(self):
+        envelope = {"v": 2, "salt": "salt", "iv": "iv", "data": "wrapped"}
+        created = self.first.post("/api/auth/register", json={
+            "name": "Parent One", "email": "parent.one@example.test",
+            "password": "sample-password-123", "vault_envelope": envelope,
+            "timezone_name": "Europe/London", "calendar_color": "#8a74ff",
+        })
+        self.assertEqual(created.status_code, 201, created.get_data(as_text=True))
+        self.assertEqual(created.json["vault_envelope"], envelope)
 
     def test_email_signup_legacy_username_login_and_vault_migration(self):
         envelope = {"v": 1, "salt": "salt", "iv": "iv", "data": "wrapped"}
