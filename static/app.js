@@ -174,21 +174,20 @@ async function decryptTree(value) {
   return value;
 }
 
-function recoveryModal(code, heading) {
+function chooseVaultPasswordModal(heading) {
   return new Promise(function(resolve){
     document.body.classList.add("modal-required");
-    openModal('<div class="recovery-panel"><p class="eyebrow">PRIVATE FAMILY VAULT</p><h3>'+esc(heading||"Save your recovery phrase")+'</h3><p><strong>Store this recovery phrase somewhere private and safe.</strong> Because your family data is end-to-end encrypted, nobody, including us, can restore your messages, events, rules or handovers without it if you lose or replace this device.</p><div class="recovery-code">'+esc(code)+'</div><button class="soft-button wide" id="copy-recovery" type="button">Copy recovery phrase</button><label class="recovery-confirm"><input id="recovery-saved" type="checkbox"> I have stored it somewhere safe</label><button class="primary-button wide" id="recovery-done" type="button" disabled>Continue</button></div>',function(){
-      document.getElementById("copy-recovery").onclick=function(){navigator.clipboard.writeText(code);toast("Recovery phrase copied","success");};
-      document.getElementById("recovery-saved").onchange=function(){document.getElementById("recovery-done").disabled=!this.checked;};
-      document.getElementById("recovery-done").onclick=function(){closeModal(true);resolve();};
+    openModal('<div class="recovery-panel"><p class="eyebrow">PRIVATE FAMILY VAULT</p><h3>'+esc(heading||"Choose a vault password")+'</h3><p>Use this password to unlock encrypted records after moving to a new device, resetting a device, or clearing browser data. It can be the same as your account password.</p><p class="vault-unlock-note">Keep it safe. We cannot reset it or restore your encrypted records without it.</p><form id="choose-vault-password" class="form-stack"><div class="field"><label>Vault password</label><input name="password" type="password" minlength="8" autocomplete="new-password" required placeholder="At least 8 characters"></div><div class="field"><label>Confirm vault password</label><input name="confirm" type="password" minlength="8" autocomplete="new-password" required placeholder="Enter it again"></div><button class="primary-button wide" type="submit">Save vault password</button></form></div>',function(){
+      document.getElementById("choose-vault-password").onsubmit=function(e){e.preventDefault();var fd=new FormData(e.target),password=String(fd.get("password")||""),confirm=String(fd.get("confirm")||"");if(password.length<8){toast("Your vault password must be at least 8 characters.","error");return;}if(password!==confirm){toast("The vault passwords do not match.","error");return;}closeModal(true);resolve(password);};
     });
   });
 }
 
 function unlockModal(envelope) {
   return new Promise(function(resolve,reject){
+    var legacy=envelope.v!==2,label=legacy?'Recovery phrase':'Vault password',description=legacy?'This account still uses its original 16-group recovery phrase. Enter it once, then you can replace it with a normal vault password.':'Enter your vault password once to unlock encrypted records on this device.',control=legacy?'<textarea name="code" autocomplete="off" required placeholder="000 000 000 …"></textarea>':'<input name="code" type="password" autocomplete="current-password" required placeholder="Vault password">';
     document.body.classList.add("modal-required");
-    openModal('<h3>Unlock your family vault</h3><p>This browser has not retained its device-only vault key. Enter your 16-group recovery phrase once to unlock it here.</p><p class="vault-unlock-note">Private Browsing may ask again after the private session ends. Normal Safari and the installed app remember their keys separately.</p><form id="unlock-vault" class="form-stack"><div class="field"><label>Recovery phrase</label><textarea name="code" autocomplete="off" required placeholder="000 000 000 …"></textarea></div><button class="primary-button" type="submit">Unlock records</button></form>',function(){
+    openModal('<h3>Unlock your family vault</h3><p>'+description+'</p><p class="vault-unlock-note">Private Browsing may ask again after the private session ends. Normal Safari and the installed app remember their keys separately.</p><form id="unlock-vault" class="form-stack"><div class="field"><label>'+label+'</label>'+control+'</div><button class="primary-button" type="submit">Unlock records</button></form>',function(){
       document.getElementById("unlock-vault").onsubmit=async function(e){e.preventDefault();try{var code=new FormData(e.target).get("code");var vault=await PTVault.unlock(state.me.user.id,envelope,code);closeModal(true);resolve(vault);}catch(error){toast(error.message,"error");}};
     });
   });
@@ -218,18 +217,26 @@ async function ensureVault() {
   if(state.me.vault_envelope){
     state.vault=await PTVault.load(state.me.user.id);
     if(!state.vault)state.vault=await unlockModal(state.me.vault_envelope);
+    if(state.me.vault_envelope.v!==2){
+      var upgradedPassword=await chooseVaultPasswordModal("Replace your recovery phrase");
+      var upgradedEnvelope=await PTVault.rewrap(state.vault,upgradedPassword);
+      await api("/api/vault/setup",{method:"POST",json:{envelope:upgradedEnvelope,records:[]}});
+      await PTVault.rememberRecovery(state.me.user.id,upgradedPassword,"password");
+      state.me.vault_envelope=upgradedEnvelope;
+      toast("Vault password saved","success");
+    }
     await encryptLegacyReceipts();
     return;
   }
   if(state.me.family_vault_ready)throw new Error("This family is already encrypted. Enter a fresh secure invite code from the connected parent.");
-  var created=await PTVault.create();state.vault=created.vault;
+  var password=await chooseVaultPasswordModal("Create your vault password");
+  var created=await PTVault.create(password);state.vault=created.vault;
   var legacy=await api("/api/vault/legacy");
   var records=await encryptLegacy(legacy);
   await api("/api/vault/setup",{method:"POST",json:{envelope:created.envelope,records:records}});
   await PTVault.remember(state.me.user.id,state.vault);
-  await PTVault.rememberRecovery(state.me.user.id,created.code);
+  await PTVault.rememberRecovery(state.me.user.id,password,"password");
   state.me.vault_envelope=created.envelope;state.me.family_vault_ready=true;
-  await recoveryModal(created.code,"Save your recovery phrase");
   await encryptLegacyReceipts();
 }
 
@@ -605,10 +612,11 @@ function scanInviteQr(form) {
 
 function requestExistingRecovery() {
   return new Promise(function(resolve,reject){
+    var legacy=state.me.vault_envelope&&state.me.vault_envelope.v!==2,label=legacy?'Recovery phrase':'Vault password',description=legacy?'Enter the recovery phrase for this older account. You will be able to replace it with a vault password after joining.':'Enter your vault password so the joined family stays protected by the same password.',control=legacy?'<textarea name="code" autocomplete="off" required placeholder="000 000 000 …"></textarea>':'<input name="code" type="password" autocomplete="current-password" required placeholder="Vault password">';
     document.body.classList.add('modal-required');
-    openModal('<h3>Confirm your recovery phrase</h3><p>This older account did not keep its recovery phrase on this device. Enter the phrase you saved at signup so the same phrase protects the joined family.</p><form id="confirm-recovery-form" class="form-stack"><div class="field"><label>Recovery phrase</label><textarea name="code" autocomplete="off" required placeholder="000 000 000 …"></textarea></div><button class="primary-button" type="submit">Continue joining</button><button class="soft-button" id="cancel-recovery-join" type="button">Cancel</button></form>',function(){
+    openModal('<h3>Confirm your '+(legacy?'recovery phrase':'vault password')+'</h3><p>'+description+'</p><form id="confirm-recovery-form" class="form-stack"><div class="field"><label>'+label+'</label>'+control+'</div><button class="primary-button" type="submit">Continue joining</button><button class="soft-button" id="cancel-recovery-join" type="button">Cancel</button></form>',function(){
       var form=document.getElementById('confirm-recovery-form');
-      form.onsubmit=async function(e){e.preventDefault();var code=String(new FormData(form).get('code')||'').trim();try{await PTVault.unlock(state.me.user.id,state.me.vault_envelope,code);closeModal(true);resolve(code);}catch(error){toast(error.message,'error');}};
+      form.onsubmit=async function(e){e.preventDefault();var code=String(new FormData(form).get('code')||'');try{await PTVault.unlock(state.me.user.id,state.me.vault_envelope,code);closeModal(true);resolve({value:code,type:legacy?'phrase':'password'});}catch(error){toast(error.message,'error');}};
       document.getElementById('cancel-recovery-join').onclick=function(){closeModal(true);reject(new Error('Joining cancelled.'));};
     });
   });
@@ -630,9 +638,14 @@ function bindJoinFamilyForm(prefillCode) {
       var existingRecovery=await PTVault.recovery(state.me.user.id);
       if(!existingRecovery)existingRecovery=await requestExistingRecovery();
       var accepted=await PTVault.acceptInvite(code,resolved.payload,existingRecovery);
+      if(accepted.secret.type==='phrase'){
+        var replacementPassword=await chooseVaultPasswordModal('Replace your recovery phrase');
+        accepted.envelope=await PTVault.rewrap(accepted.vault,replacementPassword);
+        accepted.secret={value:replacementPassword,type:'password'};
+      }
       var joined=await api('/api/family/join',{method:'POST',json:{invite_lookup:lookup,envelope:accepted.envelope}});
       await PTVault.remember(joined.user.id,accepted.vault);
-      await PTVault.rememberRecovery(joined.user.id,accepted.code);
+      await PTVault.rememberRecovery(joined.user.id,accepted.secret.value,accepted.secret.type);
       sessionStorage.removeItem('pt-pending-invite');
       state.vault=accepted.vault;state.me=joined;closeModal(true);
       state.me=await api('/api/me');showApp();await render();toast('Co-parent family space connected','success');
@@ -1039,7 +1052,7 @@ document.getElementById("notification-button").insertAdjacentHTML("afterbegin",i
 document.getElementById("notification-button").onclick=openNotifications;
 populateTimezoneChoices();
 document.getElementById("login-form").onsubmit=async function(e){e.preventDefault();var fd=new FormData(e.target);try{state.me=await api("/api/auth/login",{method:"POST",json:{identifier:fd.get("identifier"),password:fd.get("password")}});await ensureVault();state.me=await api("/api/me");showApp();await render();openPendingInvite();}catch(err){toast(err.message,"error");}};
-document.getElementById("register-form").onsubmit=async function(e){e.preventDefault();var fd=new FormData(e.target);try{var created=await PTVault.create();state.me=await api("/api/auth/register",{method:"POST",json:{name:fd.get("name"),email:fd.get("email"),password:fd.get("password"),timezone_name:fd.get("timezone_name"),calendar_color:fd.get("calendar_color"),vault_envelope:created.envelope}});state.vault=created.vault;await PTVault.remember(state.me.user.id,state.vault);await PTVault.rememberRecovery(state.me.user.id,created.code);await recoveryModal(created.code,"Save your recovery phrase");showApp();await render();openPendingInvite();toast("Your encrypted family space is ready","success");}catch(err){toast(err.message,"error");}};
+document.getElementById("register-form").onsubmit=async function(e){e.preventDefault();var fd=new FormData(e.target),vaultPassword=String(fd.get("vault_password")||""),vaultConfirm=String(fd.get("vault_password_confirm")||"");if(vaultPassword.length<8){toast("Your vault password must be at least 8 characters.","error");return;}if(vaultPassword!==vaultConfirm){toast("The vault passwords do not match.","error");return;}try{var created=await PTVault.create(vaultPassword);state.me=await api("/api/auth/register",{method:"POST",json:{name:fd.get("name"),email:fd.get("email"),password:fd.get("password"),timezone_name:fd.get("timezone_name"),calendar_color:fd.get("calendar_color"),vault_envelope:created.envelope}});state.vault=created.vault;await PTVault.remember(state.me.user.id,state.vault);await PTVault.rememberRecovery(state.me.user.id,vaultPassword,"password");showApp();await render();openPendingInvite();toast("Your encrypted family space is ready","success");}catch(err){toast(err.message,"error");}};
 document.getElementById("logout-button").onclick=async function(){try{await api("/api/auth/logout",{method:"POST",json:{}});}catch(e){}location.reload();};
 capturePendingInvite();
 bootstrap();
