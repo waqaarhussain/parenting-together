@@ -63,7 +63,11 @@
           <button id="feature-request-button" class="icon-button" aria-label="Request a feature"></button>
           <button id="notification-button" class="icon-button notification-button" aria-label="Notifications"><span id="notification-badge" class="notification-badge hidden"></span></button>
           <button id="search-shortcut" class="icon-button" aria-label="Search"></button>
-          <div id="user-avatar" class="avatar"></div>
+          <button id="user-avatar" class="avatar" type="button" aria-label="Account menu" aria-expanded="false" aria-controls="account-menu"></button>
+          <div id="account-menu" class="account-menu hidden" aria-label="Account actions">
+            <button id="account-theme" class="soft-button" type="button"></button>
+            <button id="account-signout" class="soft-button" type="button">Sign out</button>
+          </div>
         </div>
       </header>
       <section id="page" class="page"></section>
