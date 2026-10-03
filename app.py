@@ -736,7 +736,7 @@ VAULT_FIELDS = {
 
 
 def valid_vault_envelope(value):
-    return (isinstance(value, dict) and value.get("v") == 1
+    return (isinstance(value, dict) and value.get("v") in (1, 2)
             and all(isinstance(value.get(key), str) and value.get(key)
                     for key in ("salt", "iv", "data")))
 
