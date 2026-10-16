@@ -38,7 +38,7 @@ def get_pool(config):
         if key not in _pools:
             _pools[key] = ConnectionPool(
                 conninfo=key[1], min_size=1, max_size=int(config.get('DB_POOL_SIZE', 8)),
-                timeout=10, kwargs={'row_factory': row_factory, 'connect_timeout': 10},
+                timeout=10, open=True, kwargs={'row_factory': row_factory, 'connect_timeout': 10},
                 check=ConnectionPool.check_connection,
             )
         return _pools[key]

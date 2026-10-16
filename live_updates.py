@@ -47,9 +47,17 @@ class LiveHub:
             # Coalesce bursts to a single invalidation. Every refresh fetches the
             # current authorized state, so no event replay log or plaintext is needed.
             try:
-                channel.put_nowait({'changed': True})
+                channel.put_nowait({'changed': True, 'tables': [payload.get('table', 'all')]})
             except queue.Full:
-                pass
+                try:
+                    previous = channel.get_nowait()
+                except queue.Empty:
+                    previous = {'tables': []}
+                combined = set(previous['tables']) | {payload.get('table', 'all')}
+                try:
+                    channel.put_nowait({'changed': True, 'tables': sorted(combined)})
+                except queue.Full:
+                    pass
 
     def listen(self):
         last_maintenance = 0

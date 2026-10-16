@@ -4,6 +4,7 @@ import io
 import json
 import os
 import queue
+import threading
 import secrets
 import sqlite3
 import time
@@ -545,7 +546,7 @@ def live_maintenance(active):
 
 
 _live_hub = None
-_live_hub_lock = __import__("threading").Lock()
+_live_hub_lock = threading.Lock()
 
 
 def live_hub():
@@ -576,7 +577,7 @@ def live_events():
             deadline = time.monotonic() + 300 + secrets.randbelow(30)
             while time.monotonic() < deadline:
                 try:
-                    channel.get(timeout=15)
+                    change = channel.get(timeout=15)
                 except queue.Empty:
                     if not hub.ready.is_set():
                         yield 'event: unavailable\ndata: {}\n\n'
@@ -588,7 +589,7 @@ def live_events():
                 if family_id_for(uid) != fid:
                     yield 'event: membership\ndata: {}\n\n'
                     return
-                yield 'event: change\ndata: {}\n\n'
+                yield 'event: change\ndata: ' + json.dumps({'tables': change['tables']}) + '\n\n'
         finally:
             hub.unsubscribe(channel)
 

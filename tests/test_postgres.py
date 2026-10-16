@@ -140,3 +140,15 @@ class PostgresFlows(test_flows.TwoParentFlow):
         self.assertIn(b'event: ready', ready)
         self.assertNotIn(first['user']['email'].encode(), ready)
         response.close()
+
+    def test_full_family_database_migrates_and_keeps_both_logins(self):
+        app.config['DATABASE_URL'] = ''
+        self.test_join_and_shared_features()
+        self.assertTrue(migrate(self.sqlite_path, self.config))
+        app.config['DATABASE_URL'] = URL
+        self.assertEqual(self.first.get('/api/me').json['user']['email'], 'one@example.test')
+        self.assertEqual(self.second.get('/api/me').json['user']['email'], 'two@example.test')
+        self.assertTrue(self.first.get('/api/messages/verify').json['verified'])
+        self.assertEqual(len(self.second.get('/api/events').json), 1)
+        self.assertEqual(self.second.get('/api/handovers').json[0]['status'], 'completed')
+        self.assertEqual(len(self.second.get('/api/rules').json), 1)

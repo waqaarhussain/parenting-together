@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Run as root by systemd only while the app is stopped.
 set -euo pipefail
+umask 077
 APP_DIR=/opt/parenting-together
 ENV_FILE=/etc/parenting-together.env
 BACKUPS=/var/backups/parenting-together
@@ -11,7 +12,7 @@ install -d -m 700 "$BACKUPS"
 
 if [ -z "${DATABASE_URL:-}" ]; then
   echo "Preparing local PostgreSQL and preserving the existing SQLite database..."
-  if ! command -v psql >/dev/null 2>&1; then
+  if ! command -v pg_lsclusters >/dev/null 2>&1 || ! pg_lsclusters --no-header | grep -q .; then
     export DEBIAN_FRONTEND=noninteractive
     apt-get update -y
     apt-get install -y postgresql postgresql-client

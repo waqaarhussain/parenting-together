@@ -2,6 +2,7 @@ var state = { me: null, vault: null, page: "home", cache: {}, chat: null, unread
 var liveTimer = null;
 var liveSource = null;
 var liveDebounce = null;
+var liveTables = new Set();
 var liveRefreshPending = false;
 var typingDisplayTimer = null;
 var liveBusy = false;
@@ -429,11 +430,18 @@ function stopLiveUpdates() {
   liveDebounce = null;
 }
 function startLiveFallback() {
-  if (!liveTimer) liveTimer = setInterval(function(){refreshLiveState();}, 30000);
+  if (!liveTimer) liveTimer = setInterval(function(){
+    refreshLiveState();
+    if(liveSource&&liveSource.readyState===2){liveSource.close();liveSource=null;startLiveUpdates();}
+  }, 30000);
 }
-function scheduleLiveRefresh() {
+function scheduleLiveRefresh(event) {
+  var tables=event&&event.data?JSON.parse(event.data).tables:null;
+  (tables||["all"]).forEach(function(table){liveTables.add(table);});
   if (liveDebounce) return;
-  liveDebounce = setTimeout(function(){liveDebounce=null;refreshLiveState();}, 150);
+  liveDebounce = setTimeout(function(){
+    var tables=Array.from(liveTables);liveTables.clear();liveDebounce=null;refreshLiveState(tables);
+  }, 150);
 }
 function startLiveUpdates() {
   if (!state.me || document.hidden || liveSource) return;
@@ -464,13 +472,30 @@ window.addEventListener("pagehide",stopLiveUpdates);
 window.addEventListener("pageshow",function(){if(state.me)startLiveUpdates();});
 window.addEventListener("online",function(){if(state.me){stopLiveUpdates();startLiveUpdates();scheduleLiveRefresh();}});
 
-async function refreshLiveState() {
+async function refreshLivePage() {
+  // Preserve partially completed forms, date ranges and scroll positions.
+  var page=state.page,container=document.getElementById("page"),scroll=container.scrollTop;
+  var values=Array.from(container.querySelectorAll("input,select,textarea")).map(function(input){
+    return {name:input.name,value:input.value,checked:input.checked};
+  });
+  await render();
+  if(state.page!==page)return;
+  values.forEach(function(saved){
+    container.querySelectorAll("input,select,textarea").forEach(function(input){
+      if(input.name===saved.name){input.value=saved.value;input.checked=saved.checked;}
+    });
+  });
+  container.scrollTop=scroll;
+}
+
+async function refreshLiveState(tables) {
+  var typingOnly=Array.isArray(tables)&&tables.length>0&&tables.every(function(table){return table==="typing_status";});
   if (!state.me || document.hidden) return;
   if (liveBusy) {liveRefreshPending=true;return;}
   liveBusy = true;
   try {
-    if (state.page === "messages" && state.chat) await pollChat();
-    if (state.page === "calendar" && state.calendarRevision) {
+    if (!typingOnly && state.page === "messages" && state.chat) await pollChat();
+    if (!typingOnly && state.page === "calendar" && state.calendarRevision) {
       var calendarStatus = await api("/api/events/status");
       if (calendarStatus.revision !== state.calendarRevision) {
         state.calendarRevision = calendarStatus.revision;
@@ -480,6 +505,7 @@ async function refreshLiveState() {
     var status = await api("/api/messages/status");
     state.unread = status.unread;
     updateUnreadBadges();
+    if (!typingOnly) {
     await refreshNotifications(true);
     var me=await api("/api/me");
     if(!me.authenticated){showAuth();return;}
@@ -489,7 +515,8 @@ async function refreshLiveState() {
     if(familyChanged){stopLiveUpdates();startLiveUpdates();await render();return;}
     if (["home","handovers","decisions","rules","evidence","expenses"].includes(state.page) &&
         document.getElementById("modal").classList.contains("hidden") &&
-        !document.activeElement.matches("input,textarea,select")) await render();
+        !document.activeElement.matches("input,textarea,select")) await refreshLivePage();
+    }
     if (state.page === "messages" && state.chat) {
       var indicator = document.getElementById("typing-indicator");
       if (indicator) {

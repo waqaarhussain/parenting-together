@@ -22,7 +22,8 @@ A mobile-first co-parenting PWA focused on calm communication, verifiable record
 - Local message printing and PDF saving without sending plaintext back to the server
 - Light, dark and system themes
 - Installable PWA
-- SQLite persistence
+- PostgreSQL production persistence with SQLite development support
+- Server-sent live updates shared across workers via PostgreSQL LISTEN/NOTIFY
 - Caddy automatic HTTPS + Gunicorn production service
 - update-live helper
 - Confirmed full-data reset helper
@@ -45,6 +46,56 @@ Run:
 
     update-live
 
+### First PostgreSQL upgrade
+
+The existing `update-live` command is sufficient. The updated systemd service
+prepares PostgreSQL before starting the app, including when the update was
+launched using the previous version of the helper.
+
+The app stops briefly while the first upgrade installs PostgreSQL and copies the
+SQLite database. A consistent SQLite backup is saved with root-only permissions.
+The import preserves record IDs, timestamps, password hashes, vault envelopes,
+ciphertext and message hashes. Every table is checked by row count and SHA-256
+digest before a single transaction commits. The source SQLite file and uploads
+are kept in place. `DATABASE_URL` is written only after a successful copy.
+Repeated updates do not reimport the old database.
+
+The managed database uses a local Unix socket and the existing `www-data` service
+identity, without a database password in GitHub. No public database port is needed.
+The server secret and browser vault keys are not changed by migration.
+
+Before later starts, the service saves a PostgreSQL dump once per UTC day. These
+local backups are retained; they must also be copied off the VPS for protection
+against a complete disk loss or VPS reset. Monitor their disk usage and set a
+retention policy appropriate to the service before a public launch.
+
+If migration fails, the environment remains on SQLite and the original source is
+preserved. The service stays stopped so no writes can diverge between databases.
+Inspect `journalctl -u parenting-together -n 100 --no-pager` and fix the reported
+cause before restarting. Do not manually remove `DATABASE_URL` after users have
+started writing to PostgreSQL: SQLite is then an out-of-date rollback snapshot.
+
+### Live update behaviour
+
+Each active app opens one authenticated `/api/live` SSE connection. One shared
+PostgreSQL LISTEN connection per worker distributes committed family changes;
+there is no per-client database connection held for an idle stream. Bounded
+queues merge bursts. Notifications contain table/routing metadata, never message
+text, vault passwords or keys. The browser fetches authorized, encrypted records
+through the existing API after an update. Reconnects and foregrounding trigger a
+fresh fetch, so no event replay log is required.
+
+Streams close in the background and refresh after reopening. A 30-second polling
+fallback is used while a stream is unavailable. Heartbeats keep streams alive,
+and active users' event reminders are checked by the server every 15 seconds.
+This is foreground app synchronization, not a new lock-screen push service.
+
+The initial service uses two threaded workers with 128 threads each, capped at
+96 streams per worker and three per account per worker, reserving capacity for
+normal API requests. Each worker has a bounded database pool of eight connections.
+These are operating limits, not a tested user-capacity guarantee; load-test before
+a larger public launch. SQLite development mode uses the slower polling fallback.
+
 ## Resetting all app data
 
 Run:
@@ -54,12 +105,16 @@ Run:
 Type `RESET` when prompted. This permanently deletes all accounts, families,
 children, messages, calendar events, handovers, decisions, expenses, uploaded
 receipts, rules and evidence records. The app restarts ready for the first new
-account.
+account. The reset clears the PostgreSQL tables and local uploads. It retains
+existing backup files, which must be removed separately if a complete backup purge
+is intended.
 
 ## Locations
 
 - App: /opt/parenting-together
-- Database: /var/lib/parenting-together/parenting.db
+- Production database: local PostgreSQL database `parenting_together`
+- Previous SQLite database: /var/lib/parenting-together/parenting.db
+- Migration and local database backups: /var/backups/parenting-together
 - Uploads: /var/lib/parenting-together/uploads
 - Environment: /etc/parenting-together.env
 - Service: parenting-together.service
@@ -97,3 +152,14 @@ Parenting Together creates tamper-evident, timestamped records and exportable ev
     pip install -r requirements.txt
     export SECRET_KEY=dev-only-change-me
     flask --app app run --debug
+
+
+### Integration checks
+
+Run `python -m unittest discover -s tests -v` for SQLite flows. To also run the
+same flows, verified-copy migration, concurrent messages and live family-isolation
+checks on a disposable PostgreSQL database, set `PG_TEST_URL` before running the
+suite. **That database is truncated by the tests; never use production credentials.**
+GitHub Actions runs these checks using PostgreSQL 16 and separately exercises the
+real systemd startup migration, repeated startup and full-data reset on a disposable
+Ubuntu runner.

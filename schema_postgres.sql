@@ -249,3 +249,11 @@ BEGIN
     END LOOP;
 END;
 $$;
+
+CREATE INDEX IF NOT EXISTS events_family_idx ON events(family_id, start_at);
+CREATE INDEX IF NOT EXISTS handovers_family_idx ON handovers(family_id, id);
+CREATE INDEX IF NOT EXISTS decisions_family_idx ON decisions(family_id, id);
+CREATE INDEX IF NOT EXISTS expenses_family_idx ON expenses(family_id, id);
+CREATE INDEX IF NOT EXISTS rules_family_idx ON rules(family_id, id);
+CREATE INDEX IF NOT EXISTS children_family_idx ON children(family_id, id);
+CREATE INDEX IF NOT EXISTS audit_family_idx ON audit(family_id, id);
