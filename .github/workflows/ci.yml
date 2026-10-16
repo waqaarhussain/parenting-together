@@ -8,17 +8,29 @@ on:
 jobs:
   syntax:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: integration-only
+          POSTGRES_DB: parenting_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready --health-interval 5s
+          --health-timeout 5s --health-retries 10
+    env:
+      PG_TEST_URL: postgresql://postgres:integration-only@localhost:5432/parenting_test
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
       - name: Python syntax
-        run: python -m py_compile app.py
+        run: python -m py_compile app.py database.py live_updates.py migrate_sqlite.py
       - name: JavaScript syntax
         run: node --check static/app.js && node --check static/vault.js && node --check static/qrcode.js
       - name: Shell syntax
-        run: bash -n install.sh update-live.sh
+        run: bash -n install.sh update-live.sh reset-parenting-together.sh deploy/prepare-database.sh deploy/run-app.sh
       - name: Caddy configuration
         run: docker run --rm -v "$PWD/deploy/Caddyfile:/etc/caddy/Caddyfile:ro" caddy:2 caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
       - name: Install application dependencies

@@ -1,5 +1,9 @@
 var state = { me: null, vault: null, page: "home", cache: {}, chat: null, unread: 0, notificationUnread: 0, messageTarget: null, eventTarget: null, eventTargetAt: null, recordTarget: null, calendarEvents: [], calendarRevision: null, calendarCursor: new Date(), calendarSelectedDate: null, theme: localStorage.getItem("pt-theme") || "system" };
 var liveTimer = null;
+var liveSource = null;
+var liveDebounce = null;
+var liveRefreshPending = false;
+var typingDisplayTimer = null;
 var liveBusy = false;
 var lastNotificationRefresh = 0;
 var typingActive = false;
@@ -316,7 +320,7 @@ async function checkForAppUpdate() {
 function startAppUpdateWatcher() {
   if (appUpdateTimer) return;
   checkForAppUpdate();
-  appUpdateTimer = setInterval(checkForAppUpdate, 20000);
+  appUpdateTimer = setInterval(checkForAppUpdate, 60000);
   document.addEventListener("visibilitychange", function(){
     if (!document.hidden) checkForAppUpdate();
   });
@@ -326,8 +330,7 @@ function showAuth() {
   state.me = null;
   state.chat = null;
   state.calendarRevision = null;
-  if (liveTimer) clearInterval(liveTimer);
-  liveTimer = null;
+  stopLiveUpdates();
   document.body.classList.remove("app-active");
   setPageMode(null);
   document.getElementById("auth-view").classList.remove("hidden");
@@ -342,7 +345,7 @@ function showApp() {
   setPageMode(state.page);
   renderNav();
   applyTheme();
-  if (!liveTimer) liveTimer = setInterval(refreshLiveState, 1000);
+  startLiveUpdates();
   refreshLiveState();
 }
 
@@ -417,8 +420,53 @@ function openFeatureRequest() {
     };
   });
 }
+function stopLiveUpdates() {
+  if (liveSource) liveSource.close();
+  if (liveTimer) clearInterval(liveTimer);
+  if (liveDebounce) clearTimeout(liveDebounce);
+  liveSource = null;
+  liveTimer = null;
+  liveDebounce = null;
+}
+function startLiveFallback() {
+  if (!liveTimer) liveTimer = setInterval(function(){refreshLiveState();}, 30000);
+}
+function scheduleLiveRefresh() {
+  if (liveDebounce) return;
+  liveDebounce = setTimeout(function(){liveDebounce=null;refreshLiveState();}, 150);
+}
+function startLiveUpdates() {
+  if (!state.me || document.hidden || liveSource) return;
+  startLiveFallback();
+  if (!window.EventSource) return;
+  var source = new EventSource("/api/live");
+  liveSource = source;
+  source.onopen = function(){
+    if (source !== liveSource) return;
+    clearInterval(liveTimer);liveTimer=null;
+    scheduleLiveRefresh();
+  };
+  source.addEventListener("ready", function(e){
+    var data=JSON.parse(e.data);
+    if(data.version!==appVersion)checkForAppUpdate();
+    scheduleLiveRefresh();
+  });
+  source.addEventListener("change",scheduleLiveRefresh);
+  source.addEventListener("membership",function(){source.close();liveSource=null;startLiveFallback();refreshLiveState();startLiveUpdates();});
+  source.addEventListener("unavailable",function(){startLiveFallback();});
+  source.onerror = function(){if(source===liveSource)startLiveFallback();};
+}
+document.addEventListener("visibilitychange",function(){
+  if(document.hidden){stopLiveUpdates();stopTyping();}
+  else if(state.me){startLiveUpdates();scheduleLiveRefresh();}
+});
+window.addEventListener("pagehide",stopLiveUpdates);
+window.addEventListener("pageshow",function(){if(state.me)startLiveUpdates();});
+window.addEventListener("online",function(){if(state.me){stopLiveUpdates();startLiveUpdates();scheduleLiveRefresh();}});
+
 async function refreshLiveState() {
-  if (liveBusy || !state.me || document.hidden) return;
+  if (!state.me || document.hidden) return;
+  if (liveBusy) {liveRefreshPending=true;return;}
   liveBusy = true;
   try {
     if (state.page === "messages" && state.chat) await pollChat();
@@ -432,12 +480,23 @@ async function refreshLiveState() {
     var status = await api("/api/messages/status");
     state.unread = status.unread;
     updateUnreadBadges();
-    await refreshNotifications(false);
+    await refreshNotifications(true);
+    var me=await api("/api/me");
+    if(!me.authenticated){showAuth();return;}
+    var familyChanged=state.me.family.id!==me.family.id;
+    state.me=me;
+    document.getElementById("family-card").innerHTML='<strong>'+esc(me.family.name)+'</strong><span>'+me.members.length+' parent'+(me.members.length===1?'':'s')+' · '+me.children.length+' child profile'+(me.children.length===1?'':'s')+'</span>';
+    if(familyChanged){stopLiveUpdates();startLiveUpdates();await render();return;}
+    if (["home","handovers","decisions","rules","evidence","expenses"].includes(state.page) &&
+        document.getElementById("modal").classList.contains("hidden") &&
+        !document.activeElement.matches("input,textarea,select")) await render();
     if (state.page === "messages" && state.chat) {
       var indicator = document.getElementById("typing-indicator");
       if (indicator) {
         indicator.textContent = status.typing_name ? status.typing_name + " is typing…" : "";
         indicator.classList.toggle("hidden", !status.typing_name);
+        clearTimeout(typingDisplayTimer);
+        if(status.typing_name)typingDisplayTimer=setTimeout(function(){indicator.textContent="";indicator.classList.add("hidden");},6500);
       }
       Object.keys(status.reads).forEach(function(id){
         var item = state.chat.messages.find(function(message){return String(message.id) === id;});
@@ -455,6 +514,7 @@ async function refreshLiveState() {
     }
   } finally {
     liveBusy = false;
+    if(liveRefreshPending){liveRefreshPending=false;scheduleLiveRefresh();}
   }
 }
 async function navigate(page) {

@@ -18,7 +18,7 @@ from app import app, db, init_db
 class TwoParentFlow(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        app.config.update(TESTING=True, DATABASE_PATH=str(Path(self.tmp.name) / "test.db"),
+        app.config.update(TESTING=True, DATABASE_URL="", DATABASE_PATH=str(Path(self.tmp.name) / "test.db"),
                           UPLOAD_DIR=str(Path(self.tmp.name) / "uploads"))
         Path(app.config["UPLOAD_DIR"]).mkdir()
         init_db()

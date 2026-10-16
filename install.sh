@@ -77,7 +77,8 @@ if [ -d "$STAGING_CERT_DIR" ]; then
 fi
 
 systemctl daemon-reload
-systemctl enable --now parenting-together
+systemctl enable parenting-together
+systemctl restart parenting-together
 systemctl stop nginx >/dev/null 2>&1 || true
 systemctl enable --now caddy
 if ! systemctl restart caddy; then

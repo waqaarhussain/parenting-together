@@ -1,6 +1,8 @@
 (parenting_proxy) {
     encode zstd gzip
-    reverse_proxy 127.0.0.1:8765
+    reverse_proxy 127.0.0.1:8765 {
+        flush_interval -1
+    }
 
     @serviceWorker path /static/sw.js
     header @serviceWorker Cache-Control "no-cache, no-store, must-revalidate"
