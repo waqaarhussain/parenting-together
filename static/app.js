@@ -5,6 +5,7 @@ var liveDebounce = null;
 var liveTables = new Set();
 var liveRefreshPending = false;
 var typingDisplayTimer = null;
+var homeExpiryTimer = null;
 var liveBusy = false;
 var lastNotificationRefresh = 0;
 var typingActive = false;
@@ -351,6 +352,7 @@ function showApp() {
 }
 
 function setPageMode(page) {
+  if(page!=="home"){clearTimeout(homeExpiryTimer);homeExpiryTimer=null;}
   if (page !== "messages") document.body.classList.remove("message-keyboard-open");
   ["messages","calendar","evidence"].forEach(function(name){
     document.body.classList.toggle("view-"+name, page===name);
@@ -506,16 +508,16 @@ async function refreshLiveState(tables) {
     state.unread = status.unread;
     updateUnreadBadges();
     if (!typingOnly) {
-    await refreshNotifications(true);
-    var me=await api("/api/me");
-    if(!me.authenticated){showAuth();return;}
-    var familyChanged=state.me.family.id!==me.family.id;
-    state.me=me;
-    document.getElementById("family-card").innerHTML='<strong>'+esc(me.family.name)+'</strong><span>'+me.members.length+' parent'+(me.members.length===1?'':'s')+' · '+me.children.length+' child profile'+(me.children.length===1?'':'s')+'</span>';
-    if(familyChanged){stopLiveUpdates();startLiveUpdates();await render();return;}
-    if (["home","handovers","decisions","rules","evidence","expenses"].includes(state.page) &&
-        document.getElementById("modal").classList.contains("hidden") &&
-        !document.activeElement.matches("input,textarea,select")) await refreshLivePage();
+      await refreshNotifications(true);
+      var me=await api("/api/me");
+      if(!me.authenticated){showAuth();return;}
+      var familyChanged=state.me.family.id!==me.family.id;
+      state.me=me;
+      document.getElementById("family-card").innerHTML='<strong>'+esc(me.family.name)+'</strong><span>'+me.members.length+' parent'+(me.members.length===1?'':'s')+' · '+me.children.length+' child profile'+(me.children.length===1?'':'s')+'</span>';
+      if(familyChanged){stopLiveUpdates();startLiveUpdates();await render();return;}
+      if (["home","handovers","decisions","rules","evidence","expenses"].includes(state.page) &&
+          document.getElementById("modal").classList.contains("hidden") &&
+          !document.activeElement.matches("input,textarea,select")) await refreshLivePage();
     }
     if (state.page === "messages" && state.chat) {
       var indicator = document.getElementById("typing-indicator");
@@ -590,6 +592,7 @@ async function getAll() {
 
 async function renderHome() {
   var d = await getAll();
+  if(state.page!=="home")return;
   var pending = d.handovers.filter(function(x){return x.status==="pending";}).length + d.decisions.filter(function(x){return x.status==="pending";}).length + d.expenses.filter(function(x){return x.status==="pending";}).length;
   var upcoming=d.events.filter(function(x){return isFutureEvent(x.start_at,x.timezone_name);}).slice(0,8);
   var connected = state.me.members.length > 1;
@@ -607,6 +610,11 @@ async function renderHome() {
   document.getElementById("home-calendar").onclick=function(){navigate("calendar");};
   document.getElementById("home-rules").onclick=function(){navigate("rules");};
   bindEventLinks();
+  clearTimeout(homeExpiryTimer);
+  var futureStarts=d.events.map(function(event){return appDate(event.start_at,event.timezone_name).getTime();}).filter(function(stamp){return stamp>Date.now();});
+  if(futureStarts.length)homeExpiryTimer=setTimeout(function(){
+    if(state.page==="home"&&!document.hidden)renderHome();
+  },Math.min(2147483647,Math.max(1,Math.min.apply(null,futureStarts)-Date.now()+20)));
 }
 
 function listEvents(items) {

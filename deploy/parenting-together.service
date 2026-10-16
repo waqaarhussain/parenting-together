@@ -1,6 +1,8 @@
 [Unit]
 Description=Parenting Together
 After=network.target
+StartLimitIntervalSec=300
+StartLimitBurst=3
 
 [Service]
 Type=simple
