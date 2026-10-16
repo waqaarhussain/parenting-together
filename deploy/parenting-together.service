@@ -1,6 +1,8 @@
 [Unit]
 Description=Parenting Together
 After=network.target
+StartLimitIntervalSec=300
+StartLimitBurst=3
 
 [Service]
 Type=simple
@@ -8,7 +10,9 @@ User=www-data
 Group=www-data
 WorkingDirectory=/opt/parenting-together
 EnvironmentFile=/etc/parenting-together.env
-ExecStart=/opt/parenting-together/.venv/bin/gunicorn --workers 2 --threads 4 --bind 127.0.0.1:8765 --access-logfile - --error-logfile - app:app
+ExecStartPre=+/bin/bash /opt/parenting-together/deploy/prepare-database.sh
+ExecStart=/bin/bash /opt/parenting-together/deploy/run-app.sh
+TimeoutStartSec=900
 Restart=always
 RestartSec=3
 NoNewPrivileges=true

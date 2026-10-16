@@ -1,5 +1,11 @@
 var state = { me: null, vault: null, page: "home", cache: {}, chat: null, unread: 0, notificationUnread: 0, messageTarget: null, eventTarget: null, eventTargetAt: null, recordTarget: null, calendarEvents: [], calendarRevision: null, calendarCursor: new Date(), calendarSelectedDate: null, theme: localStorage.getItem("pt-theme") || "system" };
 var liveTimer = null;
+var liveSource = null;
+var liveDebounce = null;
+var liveTables = new Set();
+var liveRefreshPending = false;
+var typingDisplayTimer = null;
+var homeExpiryTimer = null;
 var liveBusy = false;
 var lastNotificationRefresh = 0;
 var typingActive = false;
@@ -316,7 +322,7 @@ async function checkForAppUpdate() {
 function startAppUpdateWatcher() {
   if (appUpdateTimer) return;
   checkForAppUpdate();
-  appUpdateTimer = setInterval(checkForAppUpdate, 20000);
+  appUpdateTimer = setInterval(checkForAppUpdate, 60000);
   document.addEventListener("visibilitychange", function(){
     if (!document.hidden) checkForAppUpdate();
   });
@@ -326,8 +332,7 @@ function showAuth() {
   state.me = null;
   state.chat = null;
   state.calendarRevision = null;
-  if (liveTimer) clearInterval(liveTimer);
-  liveTimer = null;
+  stopLiveUpdates();
   document.body.classList.remove("app-active");
   setPageMode(null);
   document.getElementById("auth-view").classList.remove("hidden");
@@ -342,11 +347,12 @@ function showApp() {
   setPageMode(state.page);
   renderNav();
   applyTheme();
-  if (!liveTimer) liveTimer = setInterval(refreshLiveState, 1000);
+  startLiveUpdates();
   refreshLiveState();
 }
 
 function setPageMode(page) {
+  if(page!=="home"){clearTimeout(homeExpiryTimer);homeExpiryTimer=null;}
   if (page !== "messages") document.body.classList.remove("message-keyboard-open");
   ["messages","calendar","evidence"].forEach(function(name){
     document.body.classList.toggle("view-"+name, page===name);
@@ -417,12 +423,81 @@ function openFeatureRequest() {
     };
   });
 }
-async function refreshLiveState() {
-  if (liveBusy || !state.me || document.hidden) return;
+function stopLiveUpdates() {
+  if (liveSource) liveSource.close();
+  if (liveTimer) clearInterval(liveTimer);
+  if (liveDebounce) clearTimeout(liveDebounce);
+  liveSource = null;
+  liveTimer = null;
+  liveDebounce = null;
+}
+function startLiveFallback() {
+  if (!liveTimer) liveTimer = setInterval(function(){
+    refreshLiveState();
+    if(liveSource&&liveSource.readyState===2){liveSource.close();liveSource=null;startLiveUpdates();}
+  }, 30000);
+}
+function scheduleLiveRefresh(event) {
+  var tables=event&&event.data?JSON.parse(event.data).tables:null;
+  (tables||["all"]).forEach(function(table){liveTables.add(table);});
+  if (liveDebounce) return;
+  liveDebounce = setTimeout(function(){
+    var tables=Array.from(liveTables);liveTables.clear();liveDebounce=null;refreshLiveState(tables);
+  }, 150);
+}
+function startLiveUpdates() {
+  if (!state.me || document.hidden || liveSource) return;
+  startLiveFallback();
+  if (!window.EventSource) return;
+  var source = new EventSource("/api/live");
+  liveSource = source;
+  source.onopen = function(){
+    if (source !== liveSource) return;
+    clearInterval(liveTimer);liveTimer=null;
+    scheduleLiveRefresh();
+  };
+  source.addEventListener("ready", function(e){
+    var data=JSON.parse(e.data);
+    if(data.version!==appVersion)checkForAppUpdate();
+    scheduleLiveRefresh();
+  });
+  source.addEventListener("change",scheduleLiveRefresh);
+  source.addEventListener("membership",function(){source.close();liveSource=null;startLiveFallback();refreshLiveState();startLiveUpdates();});
+  source.addEventListener("unavailable",function(){startLiveFallback();});
+  source.onerror = function(){if(source===liveSource)startLiveFallback();};
+}
+document.addEventListener("visibilitychange",function(){
+  if(document.hidden){stopLiveUpdates();stopTyping();}
+  else if(state.me){startLiveUpdates();scheduleLiveRefresh();}
+});
+window.addEventListener("pagehide",stopLiveUpdates);
+window.addEventListener("pageshow",function(){if(state.me)startLiveUpdates();});
+window.addEventListener("online",function(){if(state.me){stopLiveUpdates();startLiveUpdates();scheduleLiveRefresh();}});
+
+async function refreshLivePage() {
+  // Preserve partially completed forms, date ranges and scroll positions.
+  var page=state.page,container=document.getElementById("page"),scroll=container.scrollTop;
+  var values=Array.from(container.querySelectorAll("input,select,textarea")).map(function(input){
+    return {name:input.name,value:input.value,checked:input.checked};
+  });
+  await render();
+  if(state.page!==page)return;
+  values.forEach(function(saved){
+    container.querySelectorAll("input,select,textarea").forEach(function(input){
+      if(input.name===saved.name){input.value=saved.value;input.checked=saved.checked;}
+    });
+  });
+  container.scrollTop=scroll;
+}
+
+async function refreshLiveState(tables) {
+  var typingOnly=Array.isArray(tables)&&tables.length>0&&tables.every(function(table){return table==="typing_status";});
+  if (!state.me || document.hidden) return;
+  if (liveBusy) {liveRefreshPending=true;return;}
   liveBusy = true;
   try {
-    if (state.page === "messages" && state.chat) await pollChat();
-    if (state.page === "calendar" && state.calendarRevision) {
+    if (!typingOnly && state.page === "messages" && state.chat) await pollChat();
+    if (!typingOnly && state.page === "calendar" && state.calendarRevision) {
       var calendarStatus = await api("/api/events/status");
       if (calendarStatus.revision !== state.calendarRevision) {
         state.calendarRevision = calendarStatus.revision;
@@ -432,12 +507,25 @@ async function refreshLiveState() {
     var status = await api("/api/messages/status");
     state.unread = status.unread;
     updateUnreadBadges();
-    await refreshNotifications(false);
+    if (!typingOnly) {
+      await refreshNotifications(true);
+      var me=await api("/api/me");
+      if(!me.authenticated){showAuth();return;}
+      var familyChanged=state.me.family.id!==me.family.id;
+      state.me=me;
+      document.getElementById("family-card").innerHTML='<strong>'+esc(me.family.name)+'</strong><span>'+me.members.length+' parent'+(me.members.length===1?'':'s')+' · '+me.children.length+' child profile'+(me.children.length===1?'':'s')+'</span>';
+      if(familyChanged){stopLiveUpdates();startLiveUpdates();await render();return;}
+      if (["home","handovers","decisions","rules","evidence","expenses"].includes(state.page) &&
+          document.getElementById("modal").classList.contains("hidden") &&
+          !document.activeElement.matches("input,textarea,select")) await refreshLivePage();
+    }
     if (state.page === "messages" && state.chat) {
       var indicator = document.getElementById("typing-indicator");
       if (indicator) {
         indicator.textContent = status.typing_name ? status.typing_name + " is typing…" : "";
         indicator.classList.toggle("hidden", !status.typing_name);
+        clearTimeout(typingDisplayTimer);
+        if(status.typing_name)typingDisplayTimer=setTimeout(function(){indicator.textContent="";indicator.classList.add("hidden");},6500);
       }
       Object.keys(status.reads).forEach(function(id){
         var item = state.chat.messages.find(function(message){return String(message.id) === id;});
@@ -455,6 +543,7 @@ async function refreshLiveState() {
     }
   } finally {
     liveBusy = false;
+    if(liveRefreshPending){liveRefreshPending=false;scheduleLiveRefresh();}
   }
 }
 async function navigate(page) {
@@ -503,6 +592,7 @@ async function getAll() {
 
 async function renderHome() {
   var d = await getAll();
+  if(state.page!=="home")return;
   var pending = d.handovers.filter(function(x){return x.status==="pending";}).length + d.decisions.filter(function(x){return x.status==="pending";}).length + d.expenses.filter(function(x){return x.status==="pending";}).length;
   var upcoming=d.events.filter(function(x){return isFutureEvent(x.start_at,x.timezone_name);}).slice(0,8);
   var connected = state.me.members.length > 1;
@@ -520,6 +610,11 @@ async function renderHome() {
   document.getElementById("home-calendar").onclick=function(){navigate("calendar");};
   document.getElementById("home-rules").onclick=function(){navigate("rules");};
   bindEventLinks();
+  clearTimeout(homeExpiryTimer);
+  var futureStarts=d.events.map(function(event){return appDate(event.start_at,event.timezone_name).getTime();}).filter(function(stamp){return stamp>Date.now();});
+  if(futureStarts.length)homeExpiryTimer=setTimeout(function(){
+    if(state.page==="home"&&!document.hidden)renderHome();
+  },Math.min(2147483647,Math.max(1,Math.min.apply(null,futureStarts)-Date.now()+20)));
 }
 
 function listEvents(items) {

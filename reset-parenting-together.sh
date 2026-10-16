@@ -22,9 +22,26 @@ fi
 
 systemctl stop "$SERVICE"
 
-python3 - "$DATA_DIR" "$ENV_FILE" <<'PY'
+set -a
+. "$ENV_FILE"
+set +a
+if [ -n "${DATABASE_URL:-}" ]; then
+  runuser -u www-data -- env DATABASE_URL="$DATABASE_URL" /opt/parenting-together/.venv/bin/python - <<'PYRESET'
+import os, sys
+import psycopg
+from psycopg import sql
+sys.path.insert(0, "/opt/parenting-together")
+from migrate_sqlite import TABLES
+with psycopg.connect(os.environ["DATABASE_URL"]) as conn:
+    conn.execute(sql.SQL("TRUNCATE {} RESTART IDENTITY CASCADE").format(
+        sql.SQL(',').join(map(sql.Identifier, (*TABLES, 'app_migrations')))))
+PYRESET
+fi
+
+/opt/parenting-together/.venv/bin/python - "$DATA_DIR" "$ENV_FILE" <<'PY'
 from pathlib import Path
 import secrets
+import os
 import shutil
 import sys
 
@@ -36,6 +53,7 @@ if data_dir != expected or env_file != expected_env:
     raise SystemExit("Refusing to reset unexpected paths")
 if not env_file.exists():
     raise SystemExit("Environment file is missing; reset cancelled")
+
 
 for name in ("parenting.db", "parenting.db-wal", "parenting.db-shm"):
     (data_dir / name).unlink(missing_ok=True)

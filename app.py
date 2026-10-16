@@ -3,6 +3,8 @@ import html
 import io
 import json
 import os
+import queue
+import threading
 import secrets
 import sqlite3
 import time
@@ -12,7 +14,7 @@ from functools import wraps
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from flask import Flask, jsonify, render_template, request, send_file, send_from_directory, session
+from flask import Flask, Response, jsonify, render_template, request, send_file, send_from_directory, session
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
@@ -21,8 +23,12 @@ from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
 from werkzeug.security import check_password_hash, generate_password_hash
 from werkzeug.utils import secure_filename
 
+from database import connect, is_postgres, IntegrityError, initialize_postgres, lock_family
+from live_updates import LiveHub
+
 app = Flask(__name__)
 app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", secrets.token_hex(32))
+app.config["DATABASE_URL"] = os.environ.get("DATABASE_URL", "")
 app.config["DATABASE_PATH"] = os.environ.get("DATABASE_PATH", str(Path(__file__).with_name("parenting.db")))
 app.config["UPLOAD_DIR"] = os.environ.get("UPLOAD_DIR", str(Path(__file__).with_name("uploads")))
 app.config["MAX_CONTENT_LENGTH"] = int(os.environ.get("MAX_UPLOAD_MB", "10")) * 1024 * 1024
@@ -67,14 +73,13 @@ def now_iso():
 
 
 def db():
-    conn = sqlite3.connect(app.config["DATABASE_PATH"])
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
-    conn.execute("PRAGMA journal_mode = WAL")
-    return conn
+    return connect(app.config)
 
 
 def init_db():
+    if is_postgres(app.config):
+        initialize_postgres(app.config)
+        return
     schema = """
     CREATE TABLE IF NOT EXISTS users (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -313,7 +318,7 @@ def init_db():
             base = "".join(ch for ch in base if ch.isalnum() or ch in "._-") or "parent"
             candidate = base
             suffix = 1
-            while conn.execute("SELECT 1 FROM users WHERE username=? COLLATE NOCASE AND id<>?", (candidate, user["id"])).fetchone():
+            while conn.execute("SELECT 1 FROM users WHERE lower(username)=lower(?) AND id<>?", (candidate, user["id"])).fetchone():
                 suffix += 1
                 candidate = (base[:24] + str(suffix))[:30]
             conn.execute("UPDATE users SET username=? WHERE id=?", (candidate, user["id"]))
@@ -342,7 +347,8 @@ def init_db():
             conn.execute("ALTER TABLE handovers ADD COLUMN timezone_name TEXT NOT NULL DEFAULT 'Europe/London'")
 
 
-init_db()
+if os.environ.get("PT_SKIP_INIT_DB") != "1":
+    init_db()
 
 
 def rowdict(row):
@@ -495,10 +501,10 @@ def notify_family(conn, fid, actor_id, notification_type, title, body="", target
         if not include_actor and member["user_id"] == actor_id:
             continue
         conn.execute(
-            """INSERT OR IGNORE INTO notifications(
+            """INSERT INTO notifications(
                    family_id,user_id,actor_id,notification_type,title,body,target_type,target_id,
                    target_value,dedupe_key,created_at)
-               VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+               VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING""",
             (fid, member["user_id"], actor_id, notification_type, title, body, target_type,
              target_id, target_value, dedupe_key, stamp),
         )
@@ -521,15 +527,77 @@ def materialize_event_reminders(conn, fid, uid):
             if remind_at <= now < utc_start:
                 key = "event-reminder:" + occurrence["occurrence_key"]
                 conn.execute(
-                    """INSERT OR IGNORE INTO notifications(
+                    """INSERT INTO notifications(
                            family_id,user_id,actor_id,notification_type,title,body,target_type,
                            target_id,target_value,dedupe_key,created_at)
-                       VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+                       VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING""",
                     (fid, uid, event["creator_id"], "event_reminder", "Event reminder",
                      event["title"],
                      "event", event["id"], occurrence["start_at"], key, now_iso()),
                 )
                 break
+
+
+def live_maintenance(active):
+    with db() as conn:
+        for fid, uid in active:
+            if conn.execute("SELECT 1 FROM family_members WHERE family_id=? AND user_id=?", (fid, uid)).fetchone():
+                materialize_event_reminders(conn, fid, uid)
+
+
+_live_hub = None
+_live_hub_lock = threading.Lock()
+
+
+def live_hub():
+    global _live_hub
+    with _live_hub_lock:
+        if _live_hub is None:
+            _live_hub = LiveHub(app.config["DATABASE_URL"], maintenance=live_maintenance)
+    return _live_hub
+
+
+@app.get("/api/live")
+@login_required
+def live_events():
+    if not is_postgres(app.config):
+        return jsonify({"error": "Live stream unavailable; use fallback refresh."}), 503
+    fid, uid = require_family(), session["user_id"]
+    if not fid:
+        return jsonify({"error": "Family membership required."}), 403
+    hub = live_hub()
+    channel = hub.subscribe(fid, uid)
+    if channel is None:
+        return jsonify({"error": "Live stream busy; use fallback refresh."}), 503
+    version = app.config["APP_VERSION"]
+
+    def events():
+        try:
+            yield 'retry: 5000\nevent: ready\ndata: ' + json.dumps({"version": version}) + '\n\n'
+            deadline = time.monotonic() + 300 + secrets.randbelow(30)
+            while time.monotonic() < deadline:
+                try:
+                    change = channel.get(timeout=15)
+                except queue.Empty:
+                    if not hub.ready.is_set():
+                        yield 'event: unavailable\ndata: {}\n\n'
+                        return
+                    yield ': keepalive\n\n'
+                    continue
+                # Joining/leaving a family invalidates old streams. Authorize
+                # again before telling the client to fetch any changed content.
+                if family_id_for(uid) != fid:
+                    yield 'event: membership\ndata: {}\n\n'
+                    return
+                yield 'event: change\ndata: ' + json.dumps({'tables': change['tables']}) + '\n\n'
+        finally:
+            hub.unsubscribe(channel)
+
+    response = Response(events(), mimetype="text/event-stream")
+    response.headers["Cache-Control"] = "no-cache, no-store, no-transform"
+    response.headers["X-Accel-Buffering"] = "no"
+    response.call_on_close(lambda: hub.unsubscribe(channel))
+    return response
 
 
 @app.get("/api/notifications")
@@ -633,7 +701,9 @@ def api_version():
 
 @app.get("/health")
 def health():
-    return jsonify({"ok": True, "time": now_iso()})
+    with db() as conn:
+        conn.execute("SELECT 1").fetchone()
+    return jsonify({"ok": True, "time": now_iso(), "database": "postgresql" if is_postgres(app.config) else "sqlite"})
 
 
 @app.get("/api/me")
@@ -664,7 +734,7 @@ def register():
             base = "".join(ch for ch in email.split("@", 1)[0][:24] if ch.isalnum() or ch in "._-") or "parent"
             username = base
             suffix = 1
-            while conn.execute("SELECT 1 FROM users WHERE username=? COLLATE NOCASE", (username,)).fetchone():
+            while conn.execute("SELECT 1 FROM users WHERE lower(username)=lower(?)", (username,)).fetchone():
                 suffix += 1
                 username = (base[:24] + str(suffix))[:30]
             cur = conn.execute(
@@ -691,7 +761,7 @@ def register():
                     (uid, json.dumps(data["vault_envelope"], separators=(",", ":")), stamp, stamp),
                 )
             audit_event(conn, fid, uid, "created", "family", fid, "Created family space")
-    except sqlite3.IntegrityError:
+    except IntegrityError:
         return jsonify({"error": "That email address is already in use."}), 409
     session.clear()
     session["user_id"] = uid
@@ -705,7 +775,7 @@ def login():
     identifier = (data.get("identifier") or data.get("email") or "").strip().lower()
     password = data.get("password", "")
     with db() as conn:
-        user = conn.execute("SELECT * FROM users WHERE email=? COLLATE NOCASE OR username=? COLLATE NOCASE", (identifier, identifier)).fetchone()
+        user = conn.execute("SELECT * FROM users WHERE lower(email)=lower(?) OR lower(username)=lower(?)", (identifier, identifier)).fetchone()
     if not user or not check_password_hash(user["password_hash"], password):
         return jsonify({"error": "Email or password is incorrect."}), 401
     session.clear()
@@ -776,18 +846,22 @@ def setup_vault():
     uid = session["user_id"]
     stamp = now_iso()
     with db() as conn:
-        conn.execute("BEGIN IMMEDIATE")
-        conn.execute("DROP TRIGGER IF EXISTS messages_no_update")
-        conn.execute("DROP TRIGGER IF EXISTS audit_no_update")
+        lock_family(conn, fid)
+        if conn.postgres:
+            conn.execute("SET LOCAL parenting.vault_migration = 'on'")
+        else:
+            conn.execute("DROP TRIGGER IF EXISTS messages_no_update")
+            conn.execute("DROP TRIGGER IF EXISTS audit_no_update")
         for table, item_id, values, keys in prepared:
             assignments = ",".join(key + "=?" for key in keys)
             params = [values[key] for key in keys] + [item_id, fid]
             plaintext_only = " AND ".join("(" + key + " IS NULL OR " + key + " NOT LIKE 'pt1:%')" for key in keys)
             conn.execute("UPDATE " + table + " SET " + assignments + " WHERE id=? AND family_id=? AND " + plaintext_only, params)
-        conn.execute("""CREATE TRIGGER messages_no_update BEFORE UPDATE ON messages
-                        BEGIN SELECT RAISE(ABORT, 'Message records are secure'); END""")
-        conn.execute("""CREATE TRIGGER audit_no_update BEFORE UPDATE ON audit
-                        BEGIN SELECT RAISE(ABORT, 'Audit records are secure'); END""")
+        if not conn.postgres:
+            conn.execute("""CREATE TRIGGER messages_no_update BEFORE UPDATE ON messages
+                            BEGIN SELECT RAISE(ABORT, 'Message records are secure'); END""")
+            conn.execute("""CREATE TRIGGER audit_no_update BEFORE UPDATE ON audit
+                            BEGIN SELECT RAISE(ABORT, 'Audit records are secure'); END""")
         conn.execute(
             """INSERT INTO user_vaults(user_id,envelope_json,created_at,updated_at) VALUES(?,?,?,?)
                ON CONFLICT(user_id) DO UPDATE SET envelope_json=excluded.envelope_json,updated_at=excluded.updated_at""",
@@ -888,7 +962,7 @@ def join_family():
         secure_invite = None
         if invite_lookup:
             secure_invite = conn.execute(
-                "SELECT * FROM family_invites WHERE lookup_hash=?", (invite_lookup,)
+                "SELECT * FROM family_invites WHERE lookup_hash=?" + (" FOR UPDATE" if conn.postgres else ""), (invite_lookup,)
             ).fetchone()
             if not secure_invite or secure_invite["expires_at"] <= now_iso():
                 if secure_invite:
@@ -896,9 +970,10 @@ def join_family():
                 return jsonify({"error": "That invite code is invalid or has expired."}), 404
             target = conn.execute("SELECT * FROM families WHERE id=?", (secure_invite["family_id"],)).fetchone()
         else:
-            target = conn.execute("SELECT * FROM families WHERE invite_code=? COLLATE NOCASE", (code,)).fetchone()
+            target = conn.execute("SELECT * FROM families WHERE lower(invite_code)=lower(?)", (code,)).fetchone()
         if not target:
             return jsonify({"error": "Invite code not found."}), 404
+        lock_family(conn, target["id"])
         target_uses_vault = bool(conn.execute(
             """SELECT 1 FROM family_members fm JOIN user_vaults uv ON uv.user_id=fm.user_id
                WHERE fm.family_id=? LIMIT 1""", (target["id"],)
@@ -1021,7 +1096,7 @@ def list_messages():
             if unread:
                 stamp = now_iso()
                 conn.executemany(
-                    "INSERT OR IGNORE INTO message_reads(message_id,user_id,read_at) VALUES(?,?,?)",
+                    "INSERT INTO message_reads(message_id,user_id,read_at) VALUES(?,?,?) ON CONFLICT DO NOTHING",
                     [(mid, uid, stamp) for mid in unread],
                 )
             has_older = bool(rows and conn.execute(
@@ -1050,7 +1125,7 @@ def list_messages():
         if unread:
             stamp = now_iso()
             conn.executemany(
-                "INSERT OR IGNORE INTO message_reads(message_id,user_id,read_at) VALUES(?,?,?)",
+                "INSERT INTO message_reads(message_id,user_id,read_at) VALUES(?,?,?) ON CONFLICT DO NOTHING",
                 [(mid, uid, stamp) for mid in unread],
             )
     if after is None:
@@ -1117,7 +1192,7 @@ def send_message():
     created = now_iso()
     with db() as conn:
         # Serialize the chain head read with writes from the other parent.
-        conn.execute("BEGIN IMMEDIATE")
+        lock_family(conn, fid)
         prev = conn.execute(
             "SELECT record_hash FROM messages WHERE family_id=? ORDER BY id DESC LIMIT 1", (fid,)
         ).fetchone()
@@ -1709,6 +1784,11 @@ def search_all():
             conditions = ["COALESCE(CAST(" + field + " AS TEXT),'') LIKE ? ESCAPE '!'" for field in fields for _ in patterns]
             sql = "SELECT " + selection + " " + source + " WHERE " + alias + ".family_id=? AND (" + " OR ".join(conditions) + ") ORDER BY " + alias + ".id DESC LIMIT 100"
             params = [fid] + patterns * len(fields)
+            if conn.postgres:
+                sql = sql.replace("GROUP_CONCAT(read_at,' ')", "STRING_AGG(read_at,' ')")
+                sql = sql.replace("printf('£%.2f',e.amount_pence/100.0)", "('£'||trim(to_char(e.amount_pence/100.0,'FM999999999990.00')))")
+                sql = sql.replace("printf('%.2f',e.amount_pence/100.0)", "trim(to_char(e.amount_pence/100.0,'FM999999999990.00'))")
+                sql = sql.replace(" LIKE ?", " ILIKE ?")
             for row in conn.execute(sql, params):
                 item = rowdict(row)
                 item["type"] = kind
