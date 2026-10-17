@@ -131,11 +131,13 @@ function applyTheme() {
   localStorage.setItem("pt-theme", state.theme);
   var dark = state.theme === "dark" || (state.theme === "system" && window.matchMedia("(prefers-color-scheme: dark)").matches);
   var icon = dark ? icons.sun : icons.moon;
-  document.querySelectorAll(".theme-toggle").forEach(function(b){ b.innerHTML = icon; });
+  document.querySelectorAll(".theme-toggle").forEach(function(b){
+    b.innerHTML = icon;
+    b.setAttribute("aria-label",dark ? "Switch to light theme" : "Switch to dark theme");
+    b.title=dark ? "Switch to light theme" : "Switch to dark theme";
+  });
   var sb = document.getElementById("sidebar-theme");
   if (sb) sb.textContent = dark ? "Switch to light theme" : "Switch to dark theme";
-  var accountTheme = document.getElementById("account-theme");
-  if (accountTheme) accountTheme.textContent = dark ? "Switch to light theme" : "Switch to dark theme";
 }
 function cycleTheme() {
   var dark = state.theme === "dark" || (state.theme === "system" && window.matchMedia("(prefers-color-scheme: dark)").matches);
@@ -798,9 +800,17 @@ function messageHtml(message) {
 async function pollChat(force) {
   var chat = state.chat;
   var box = document.getElementById("messages");
-  if (!chat || !box || chat.polling || state.page !== "messages") return;
+  if (!chat || !box || state.page !== "messages") return;
+  if (chat.polling) {
+    if(force){
+      try { await chat.pollPromise; } catch (_) {}
+      if(state.chat===chat) return pollChat(true);
+    }
+    return;
+  }
   if (!force && box.scrollHeight - box.scrollTop - box.clientHeight > 100) return;
   chat.polling = true;
+  chat.pollPromise = (async function(){
   try {
     do {
       var lastId = chat.messages.length ? chat.messages[chat.messages.length-1].id : 0;
@@ -820,6 +830,27 @@ async function pollChat(force) {
   } finally {
     chat.polling = false;
   }
+  })();
+  return chat.pollPromise;
+}
+
+async function sendChatMessage(form, input) {
+  var draft=input.value, body=draft.trim(), button=form.querySelector("button");
+  if(!body||button.disabled)return;
+  button.disabled=true;
+  stopTyping();
+  try {
+    await api("/api/messages",{method:"POST",json:{body:body}});
+  } catch(err) {
+    toast(err.message,"error");
+    button.disabled=false;
+    return;
+  }
+  // A confirmed send must not be reported as failed if the following read fails.
+  if(input.value===draft)input.value="";
+  button.disabled=false;
+  try { await pollChat(true); }
+  catch(_) { scheduleLiveRefresh(); }
 }
 async function loadOlderMessages() {
   var chat = state.chat;
@@ -903,6 +934,10 @@ async function renderMessages() {
   document.getElementById("load-older").onclick = loadOlderMessages;
   var form = document.getElementById("message-form");
   var input = form.elements.namedItem("body");
+  // Keep the keyboard and fitted chat in place when tapping Send.
+  form.querySelector("button").addEventListener("pointerdown",function(e){
+    if(document.activeElement===input)e.preventDefault();
+  });
   input.addEventListener("focus", function(){
     document.body.classList.add("message-keyboard-open");
     requestAnimationFrame(function(){ window.scrollTo(0, 0); });
@@ -923,19 +958,7 @@ async function renderMessages() {
   input.addEventListener("blur", stopTyping);
   form.onsubmit = async function(e){
     e.preventDefault();
-    var body = input.value.trim();
-    if (!body || form.querySelector("button").disabled) return;
-    form.querySelector("button").disabled = true;
-    stopTyping();
-    try {
-      await api("/api/messages", {method:"POST", json:{body:body}});
-      input.value = "";
-      await pollChat(true);
-    } catch (err) {
-      toast(err.message, "error");
-    } finally {
-      form.querySelector("button").disabled = false;
-    }
+    await sendChatMessage(form,input);
   };
   refreshLiveState();
 }
@@ -1148,6 +1171,7 @@ function renderSearch() {
 document.querySelectorAll(".auth-tab").forEach(function(b){b.onclick=function(){setAuthTab(b.dataset.authTab);};});
 document.getElementById("auth-theme").onclick=cycleTheme;
 document.getElementById("sidebar-theme").onclick=cycleTheme;
+document.getElementById("topbar-theme").onclick=cycleTheme;
 document.getElementById("modal-close").onclick=closeModal;
 document.getElementById("modal").onclick=function(e){if(e.target===e.currentTarget)closeModal();};
 document.getElementById("feature-request-button").innerHTML=icons.feature;
@@ -1168,7 +1192,6 @@ document.getElementById("user-avatar").onclick=function(){
   menu.classList.toggle("hidden",!opening);
   this.setAttribute("aria-expanded",String(opening));
 };
-document.getElementById("account-theme").onclick=function(){cycleTheme();closeAccountMenu();document.getElementById("user-avatar").focus();};
 document.addEventListener("click",function(e){if(!e.target.closest("#account-menu")&&!e.target.closest("#user-avatar"))closeAccountMenu();});
 document.addEventListener("keydown",function(e){if(e.key==="Escape"&&!document.getElementById("account-menu").classList.contains("hidden")){closeAccountMenu();document.getElementById("user-avatar").focus();}});
 async function signOut(){try{await api("/api/auth/logout",{method:"POST",json:{}});}catch(e){}location.reload();}

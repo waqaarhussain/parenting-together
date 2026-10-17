@@ -211,6 +211,17 @@ body.view-calendar .page{overflow:hidden}
 }
 
 /* Tablet PWAs use the desktop sidebar, but still sit beneath the iOS status bar. */
+.topbar-theme{display:none;position:static}
+@media(max-width:760px){
+  .topbar-actions .topbar-theme{display:grid}
+  .chat-compose .send-button{touch-action:manipulation;-webkit-tap-highlight-color:transparent}
+}
+@media(max-width:360px){
+  .topbar-actions{gap:4px}
+  .topbar-actions .icon-button,.topbar-actions #feature-request-button,
+  .topbar-actions #notification-button,.topbar-actions #search-shortcut,
+  .topbar-actions .avatar{width:33px;height:36px}
+}
 @media(min-width:761px){
   html.standalone .topbar{height:calc(82px + env(safe-area-inset-top));padding-top:env(safe-area-inset-top)}
   html.standalone .sidebar{height:100dvh;padding-top:calc(22px + env(safe-area-inset-top));padding-bottom:calc(22px + env(safe-area-inset-bottom))}
