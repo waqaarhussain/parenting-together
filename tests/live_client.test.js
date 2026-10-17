@@ -72,3 +72,33 @@ test('live page refresh preserves unsent form values and scroll position',async(
   await ctx.refreshLivePage();
   assert.equal(inputs[0].value,'unsaved rule');assert.equal(inputs[1].value,'2026-10-01');assert.equal(container.scrollTop,47);
 });
+
+test('visible section clears its own alerts while other sections and hidden apps retain them',async()=>{
+  const sections={messages:'message',calendar:'event',handovers:'handover',decisions:'decision',rules:'rule',expenses:'expense',evidence:'activity',home:'home'};
+  for(const [page,target] of Object.entries(sections)){
+    for(const hidden of [false,true]){
+      const calls=[];
+      const items=[{id:7,target_type:target},{id:6,target_type:'unrelated'}];
+      const ctx={state:{me:{user:{id:1}},page},document:{hidden},lastNotificationRefresh:0,
+        Date,updateNotificationBadge(){},api:async(path,options)=>{
+          calls.push({path,options});
+          if(options){assert.equal(options.json.through_id,7);assert.equal(options.json.page,page);return {ok:true};}
+          return calls.length>1?{unread:1,items:[items[1]]}:{unread:2,items};
+        }};
+      vm.createContext(ctx);
+      vm.runInContext(source.slice(source.indexOf('async function refreshNotifications('),source.indexOf('async function openNotifications(')),ctx);
+      await ctx.refreshNotifications(true);
+      assert.equal(calls.filter(call=>call.options).length,hidden?0:1);
+      assert.equal(ctx.state.notificationUnread,hidden?2:1);
+    }
+  }
+  const ctx={state:{me:{},page:'calendar'},document:{hidden:false},lastNotificationRefresh:0,
+    Date,updateNotificationBadge(){},api:async(path,options)=>{
+      assert.equal(options,undefined);
+      return {unread:2,items:[{id:7,target_type:'message'},{id:6,target_type:'rule'}]};
+    }};
+  vm.createContext(ctx);
+  vm.runInContext(source.slice(source.indexOf('async function refreshNotifications('),source.indexOf('async function openNotifications(')),ctx);
+  await ctx.refreshNotifications(true);
+  assert.equal(ctx.state.notificationUnread,2);
+});
