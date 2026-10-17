@@ -34,9 +34,35 @@ Run:
 
     curl -fsSL https://raw.githubusercontent.com/waqaarhussain/parenting-together/main/install.sh | sudo bash
 
-Then open:
+Setup asks for a hostname. Enter a domain/subdomain whose A/AAAA records point to
+this VPS, or **press Enter to use the VPS public IP with HTTPS**. No provider
+hostname is required. Setup prints the exact URL to open.
 
-    https://v2202603253680444276.megasrv.de
+IP mode uses publicly trusted Let's Encrypt short-lived IP certificates, renewed
+automatically by Caddy (2.10.1 or later). Ports **80 and 443** must be reachable in
+both the VPS and provider firewall. The IP must be publicly routable to this VPS.
+If automatic detection chooses the wrong address, set `PT_PUBLIC_IP` for setup.
+The installer checks the chosen HTTPS URL before reporting success.
+
+Do not use plain `http://IP` for the app: the encrypted vault, secure cookies and
+PWA APIs require a secure browser context. Public-IP HTTPS preserves that context.
+No self-signed or staging certificates are substituted when public issuance fails.
+
+To change the hostname/IP selection later, run:
+
+    configure-parenting-together
+
+The selection is saved outside the checkout and reused by `update-live`. Changing
+the address creates a new browser origin, so you may need to log in and enter your
+vault password once for that address. It does not erase the server's records.
+
+For an existing installation with the old hardcoded hostname, rerun the bootstrap
+command above once to install this configurable setup and choose the new address.
+Your accounts and database are retained. Later updates use `update-live` as usual.
+
+For unattended setup, set `PT_HOSTNAME` explicitly (empty for IP mode), optionally
+`PT_PUBLIC_IP`, and optionally `PT_ACME_EMAIL` when invoking the installer. The
+interactive prompt reads `/dev/tty`, so piping the installer into Bash still works.
 
 The installer creates a random server secret. There are no default accounts or hard-coded passwords.
 
@@ -118,6 +144,8 @@ is intended.
 - Uploads: /var/lib/parenting-together/uploads
 - Environment: /etc/parenting-together.env
 - Service: parenting-together.service
+- Site selection: /etc/parenting-together-site.json
+- Generated Caddy site: /etc/caddy/parenting-together-site.caddy
 - HTTPS certificates: /var/lib/caddy
 
 Caddy renews certificates automatically. The app data reset does not remove its

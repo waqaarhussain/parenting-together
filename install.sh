@@ -49,32 +49,10 @@ install -m 644 "$APP_DIR/deploy/parenting-together.service" /etc/systemd/system/
 install -m 755 "$APP_DIR/update-live.sh" /usr/local/bin/update-live
 install -m 755 "$APP_DIR/reset-parenting-together.sh" /usr/local/bin/reset-parenting-together
 
-if ! command -v caddy >/dev/null 2>&1; then
-  apt-get install -y debian-keyring debian-archive-keyring apt-transport-https gnupg
-  curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor --yes -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
-  curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' > /etc/apt/sources.list.d/caddy-stable.list
-  chmod o+r /usr/share/keyrings/caddy-stable-archive-keyring.gpg /etc/apt/sources.list.d/caddy-stable.list
-  apt-get update -y
-  systemctl stop nginx >/dev/null 2>&1 || true
-  apt-get install -y caddy
-fi
-install -m 644 "$APP_DIR/deploy/Caddyfile" /etc/caddy/Caddyfile
-rm -f /etc/systemd/system/caddy.service.d/parenting-together.conf
-if ! caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile; then
-  systemctl stop caddy >/dev/null 2>&1 || true
-  systemctl start nginx >/dev/null 2>&1 || true
-  exit 1
-fi
-
-# A public CA failure may leave Caddy serving an untrusted Let's Encrypt
-# staging certificate. Preserve that disposable certificate outside Caddy's
-# active certificate tree so Caddy requests a trusted replacement.
-STAGING_CERT_DIR="/var/lib/caddy/.local/share/caddy/certificates/acme-staging-v02.api.letsencrypt.org-directory/v2202603253680444276.megasrv.de"
-if [ -d "$STAGING_CERT_DIR" ]; then
-  STAGING_BACKUP_DIR="/var/lib/caddy/staging-certificate-backups"
-  install -d -m 700 -o caddy -g caddy "$STAGING_BACKUP_DIR"
-  mv "$STAGING_CERT_DIR" "$STAGING_BACKUP_DIR/v2202603253680444276.megasrv.de-$(date -u +%Y%m%dT%H%M%SZ)"
-fi
+bash "$APP_DIR/deploy/ensure-caddy.sh"
+python3 "$APP_DIR/deploy/configure_site.py" --reuse
+install -m 755 "$APP_DIR/deploy/configure-site.sh" /usr/local/bin/configure-parenting-together
+SITE_URL="$(python3 -c 'import json; print(json.load(open("/etc/parenting-together-site.json"))["url"])')"
 
 systemctl daemon-reload
 systemctl enable parenting-together
@@ -95,8 +73,9 @@ fi
 sleep 1
 if curl -fsS http://127.0.0.1:8765/health >/dev/null; then
   echo
+  bash "$APP_DIR/deploy/check-site.sh"
   echo "Parenting Together installed successfully."
-  echo "Open: https://v2202603253680444276.megasrv.de"
+  echo "Open: $SITE_URL"
   echo "Future updates: update-live"
   echo "Full data reset: reset-parenting-together"
 else
