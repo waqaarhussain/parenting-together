@@ -447,7 +447,7 @@ function startLiveFallback() {
   }, 30000);
 }
 function scheduleLiveRefresh(event) {
-  var tables=event&&event.data?JSON.parse(event.data).tables:null;
+  var tables=Array.isArray(event)?event:(event&&event.data?JSON.parse(event.data).tables:null);
   (tables||["all"]).forEach(function(table){liveTables.add(table);});
   if (liveDebounce) return;
   liveDebounce = setTimeout(function(){
@@ -489,7 +489,7 @@ async function refreshLivePage() {
   var values=Array.from(container.querySelectorAll("input,select,textarea")).map(function(input){
     return {name:input.name,value:input.value,checked:input.checked};
   });
-  await render();
+  await render(true);
   if(state.page!==page)return;
   values.forEach(function(saved){
     container.querySelectorAll("input,select,textarea").forEach(function(input){
@@ -499,10 +499,21 @@ async function refreshLivePage() {
   container.scrollTop=scroll;
 }
 
+function livePageNeedsRefresh(page,tables) {
+  if(!Array.isArray(tables)||!tables.length||tables.includes("all")||tables.includes("family_members"))return true;
+  var dependencies={home:["events","handovers","decisions","expenses","rules","children"],
+    handovers:["handovers"],decisions:["decisions"],rules:["rules"],
+    evidence:["audit","messages"],expenses:["expenses"]};
+  return (dependencies[page]||[]).some(function(table){return tables.includes(table);});
+}
+
 async function refreshLiveState(tables) {
   var typingOnly=Array.isArray(tables)&&tables.length>0&&tables.every(function(table){return table==="typing_status";});
   if (!state.me || document.hidden) return;
-  if (liveBusy) {liveRefreshPending=true;return;}
+  if (liveBusy) {
+    (tables&&tables.length?tables:["all"]).forEach(function(table){liveTables.add(table);});
+    liveRefreshPending=true;return;
+  }
   liveBusy = true;
   try {
     if (!typingOnly && state.page === "messages" && state.chat) await pollChat();
@@ -525,6 +536,7 @@ async function refreshLiveState(tables) {
       document.getElementById("family-card").innerHTML='<strong>'+esc(me.family.name)+'</strong><span>'+me.members.length+' parent'+(me.members.length===1?'':'s')+' · '+me.children.length+' child profile'+(me.children.length===1?'':'s')+'</span>';
       if(familyChanged){stopLiveUpdates();startLiveUpdates();await render();return;}
       if (["home","handovers","decisions","rules","evidence","expenses"].includes(state.page) &&
+          livePageNeedsRefresh(state.page,tables) &&
           document.getElementById("modal").classList.contains("hidden") &&
           !document.activeElement.matches("input,textarea,select")) await refreshLivePage();
     }
@@ -552,7 +564,7 @@ async function refreshLiveState(tables) {
     }
   } finally {
     liveBusy = false;
-    if(liveRefreshPending){liveRefreshPending=false;scheduleLiveRefresh();}
+    if(liveRefreshPending){liveRefreshPending=false;scheduleLiveRefresh([]);}
   }
 }
 async function navigate(page) {
@@ -572,11 +584,13 @@ function setHeading() {
   document.getElementById("page-title").textContent = p[1];
 }
 
-async function render() {
-  setPageMode(state.page);
-  setHeading();
+async function render(background) {
   var page = document.getElementById("page");
-  page.innerHTML = '<div class="empty"><strong>Loading</strong>Pulling your family space together…</div>';
+  if(!background){
+    setPageMode(state.page);
+    setHeading();
+    page.innerHTML = '<div class="empty"><strong>Loading</strong>Pulling your family space together…</div>';
+  }
   try {
     if (state.page === "home") return await renderHome();
     if (state.page === "messages") return await renderMessages();
@@ -588,6 +602,7 @@ async function render() {
     if (state.page === "rules") return await renderRules();
     if (state.page === "search") return await renderSearch();
   } catch (e) {
+    if(background)throw e;
     page.innerHTML = '<div class="empty"><strong>Could not load this page</strong>'+esc(e.message)+'</div>';
   }
 }

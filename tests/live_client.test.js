@@ -64,7 +64,8 @@ test('browsers without EventSource retain the slower refresh',()=>{
 test('live page refresh preserves unsent form values and scroll position',async()=>{
   let inputs=[{name:'title',value:'unsaved rule',checked:false},{name:'start',value:'2026-10-01',checked:false}];
   const container={scrollTop:47,querySelectorAll:()=>inputs};
-  const ctx={state:{page:'rules'},document:{getElementById:()=>container},render:async()=>{
+  const ctx={state:{page:'rules'},document:{getElementById:()=>container},render:async(background)=>{
+    assert.equal(background,true);
     inputs=[{name:'title',value:'',checked:false},{name:'start',value:'',checked:false}];container.scrollTop=0;
   }};
   vm.createContext(ctx);
@@ -156,4 +157,64 @@ test('forced chat refresh waits for the in-flight read then fetches newly sent m
   assert.equal(calls,1);complete([]);await initial;await forced;
   assert.equal(calls,2);assert.equal(chat.polling,false);
   assert.deepEqual(chat.messages.map(m=>m.id),[1,2]);assert.deepEqual(appended,['2']);
+});
+
+test('incoming messages update activity but do not redraw Home or unrelated sections',()=>{
+  const ctx={};vm.createContext(ctx);
+  vm.runInContext(source.slice(source.indexOf('function livePageNeedsRefresh('),source.indexOf('async function refreshLiveState(')),ctx);
+  const messageChange=['messages','audit','notifications'];
+  for(const page of ['home','handovers','decisions','rules','expenses'])assert.equal(ctx.livePageNeedsRefresh(page,messageChange),false);
+  assert.equal(ctx.livePageNeedsRefresh('evidence',messageChange),true);
+  for(const table of ['events','rules','handovers','decisions','expenses','children'])assert.equal(ctx.livePageNeedsRefresh('home',[table]),true);
+  for(const page of ['home','handovers','decisions','rules','expenses','evidence']){
+    assert.equal(ctx.livePageNeedsRefresh(page,['all']),true);
+    assert.equal(ctx.livePageNeedsRefresh(page,['family_members']),true);
+    assert.equal(ctx.livePageNeedsRefresh(page),true);
+  }
+});
+
+test('background rendering keeps existing content during loading and failed refreshes',async()=>{
+  let complete;
+  const writes=[],page={};let html='existing home';
+  Object.defineProperty(page,'innerHTML',{get:()=>html,set:value=>{writes.push(value);html=value;}});
+  const ctx={state:{page:'home'},document:{getElementById:()=>page},
+    setPageMode(){throw Error('background refresh must not reset layout');},
+    setHeading(){throw Error('background refresh must not reset heading');},
+    renderHome:()=>new Promise(resolve=>complete=()=>{page.innerHTML='updated home';resolve();})};
+  vm.createContext(ctx);
+  vm.runInContext(source.slice(source.indexOf('async function render('),source.indexOf('async function getAll(')),ctx);
+  const pending=ctx.render(true);
+  assert.equal(html,'existing home');assert.deepEqual(writes,[]);
+  complete();await pending;assert.deepEqual(writes,['updated home']);
+  ctx.renderHome=async()=>{throw Error('temporary connection failure');};
+  await assert.rejects(ctx.render(true),/temporary connection failure/);
+  assert.equal(html,'updated home');assert.equal(writes.length,1);
+});
+
+test('busy live refresh retains changed tables without escalating to a full-page refresh',async()=>{
+  const c=client();Object.assign(c.context,{liveBusy:true,liveRefreshPending:false});
+  vm.runInContext(source.slice(source.indexOf('async function refreshLiveState('),source.indexOf('async function navigate(')),c.context);
+  await c.context.refreshLiveState(['messages','notifications']);
+  assert.equal(c.context.liveRefreshPending,true);
+  assert.deepEqual(Array.from(c.context.liveTables),['messages','notifications']);
+  // The queued refresh passes its accumulated table names through unchanged.
+  const received=[];c.context.refreshLiveState=tables=>received.push(Array.from(tables));
+  c.context.scheduleLiveRefresh([]);c.flush();
+  assert.deepEqual(received,[['messages','notifications']]);
+});
+
+test('incoming message refresh updates badges while leaving Home content alone',async()=>{
+  const me={authenticated:true,family:{id:1,name:'Family'},members:[],children:[]};
+  let badgeUpdates=0,notificationUpdates=0,redraws=0;
+  const ctx={state:{me,page:'home'},liveBusy:false,liveRefreshPending:false,
+    liveTables:new Set(),document:{hidden:false,getElementById:()=>({innerHTML:''})},
+    api:async url=>url==='/api/me'?me:{unread:2,reads:{}},
+    updateUnreadBadges:()=>badgeUpdates++,refreshNotifications:async()=>notificationUpdates++,
+    refreshLivePage:async()=>redraws++,
+    scheduleLiveRefresh(){},showAuth(){throw Error('unexpected logout');}};
+  vm.createContext(ctx);
+  vm.runInContext(source.slice(source.indexOf('function livePageNeedsRefresh('),source.indexOf('async function navigate(')),ctx);
+  await ctx.refreshLiveState(['messages','audit','notifications']);
+  assert.equal(ctx.state.unread,2);assert.equal(badgeUpdates,1);assert.equal(notificationUpdates,1);assert.equal(redraws,0);
+  assert.equal(ctx.liveBusy,false);
 });
