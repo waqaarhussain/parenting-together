@@ -102,3 +102,58 @@ test('visible section clears its own alerts while other sections and hidden apps
   await ctx.refreshNotifications(true);
   assert.equal(ctx.state.notificationUnread,2);
 });
+
+function sender(api,pollChat){
+  const errors=[],button={disabled:false},input={value:'test 1'},form={querySelector:()=>button};
+  let refreshes=0;
+  const ctx={api,pollChat,stopTyping(){},toast:message=>errors.push(message),scheduleLiveRefresh:()=>refreshes++};
+  vm.createContext(ctx);
+  vm.runInContext(source.slice(source.indexOf('async function sendChatMessage('),source.indexOf('async function loadOlderMessages(')),ctx);
+  return {ctx,errors,button,input,form,get refreshes(){return refreshes;}};
+}
+
+test('accepted sends survive refresh errors without a false send failure or resending',async()=>{
+  let sends=0;
+  const c=sender(async()=>{sends++;},async()=>{throw new Error('refresh failed');});
+  await c.ctx.sendChatMessage(c.form,c.input);
+  assert.equal(sends,1);assert.equal(c.input.value,'');assert.equal(c.errors.length,0);
+  assert.equal(c.refreshes,1);assert.equal(c.button.disabled,false);
+});
+
+test('failed sends retain the draft and allow a deliberate retry',async()=>{
+  let polls=0;
+  const c=sender(async()=>{throw new Error('send failed');},async()=>polls++);
+  await c.ctx.sendChatMessage(c.form,c.input);
+  assert.equal(c.input.value,'test 1');assert.deepEqual(c.errors,['send failed']);
+  assert.equal(c.button.disabled,false);assert.equal(polls,0);
+});
+
+test('rapid submissions do not duplicate a pending send or erase the next draft',async()=>{
+  let finish,sends=0;
+  const c=sender(()=>{sends++;return new Promise(resolve=>finish=resolve);},async()=>{});
+  const first=c.ctx.sendChatMessage(c.form,c.input);
+  c.input.value='test 2';
+  await c.ctx.sendChatMessage(c.form,c.input);
+  assert.equal(sends,1);finish();await first;
+  assert.equal(c.input.value,'test 2');assert.equal(c.button.disabled,false);
+});
+
+test('forced chat refresh waits for the in-flight read then fetches newly sent messages',async()=>{
+  let complete,calls=0;
+  const appended=[];
+  const chat={messages:[{id:1}],polling:false};
+  const box={scrollHeight:100,scrollTop:100,clientHeight:100,querySelector:()=>null,
+    insertAdjacentHTML:(_,html)=>appended.push(html)};
+  const ctx={state:{chat,page:'messages'},document:{getElementById:id=>id==='messages'?box:null},
+    messageHtml:message=>String(message.id),api:()=>{
+      calls++;
+      if(calls===1)return new Promise(resolve=>complete=resolve);
+      return Promise.resolve([{id:2}]);
+    }};
+  vm.createContext(ctx);
+  vm.runInContext(source.slice(source.indexOf('async function pollChat('),source.indexOf('async function sendChatMessage(')),ctx);
+  const initial=ctx.pollChat();const forced=ctx.pollChat(true);
+  assert.equal(calls,1);complete([]);await initial;await forced;
+  assert.equal(calls,2);assert.equal(chat.polling,false);
+  assert.deepEqual(chat.messages.map(m=>m.id),[1,2]);assert.deepEqual(appended,['2']);
+});
