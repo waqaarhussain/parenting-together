@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from deploy.configure_site import choose_config, normalize_host, render_config, site_config
+from deploy.configure_site import detect_public_ip, choose_config, normalize_host, render_config, site_config
 
 TEMPLATE = Path('deploy/Caddyfile.template').read_text()
 
@@ -35,6 +35,20 @@ class SiteConfiguration(unittest.TestCase):
         self.assertNotIn('staging',rendered)
         self.assertNotIn('zerossl',rendered)
         self.assertNotIn('tls internal',rendered)
+
+    def test_ip_detection_skips_address_entries_without_local_field(self):
+        interfaces=[{'addr_info':[{'family':'inet','local':'79.99.40.230'},
+                                 {'family':'inet6','scope':'global'}, None]},
+                    {'ifname':'extra','addr_info':None}]
+        with patch.dict(os.environ,{},clear=True), patch('deploy.configure_site.subprocess.check_output',return_value=json.dumps(interfaces).encode()):
+            self.assertEqual(detect_public_ip(),'79.99.40.230')
+
+    def test_ip_detection_uses_external_lookup_when_no_usable_interface_address(self):
+        interfaces=[{'addr_info':[{'family':'inet6'}, {'local':'10.0.0.2'}, {'local':None}]}]
+        with patch.dict(os.environ,{},clear=True), patch('deploy.configure_site.subprocess.check_output',return_value=json.dumps(interfaces).encode()), patch('deploy.configure_site.urlopen') as lookup:
+            lookup.return_value.__enter__.return_value.read.return_value=b'79.99.40.230'
+            self.assertEqual(detect_public_ip(),'79.99.40.230')
+            lookup.assert_called_once()
 
     def test_ipv6_url_is_bracketed(self):
         config=site_config('2606:4700:4700::1111')
