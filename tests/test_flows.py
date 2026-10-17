@@ -12,7 +12,7 @@ os.environ["DATABASE_PATH"] = str(Path(_import_dir.name) / "import.db")
 os.environ["UPLOAD_DIR"] = str(Path(_import_dir.name) / "uploads")
 os.environ["SECRET_KEY"] = "test-only-secret"
 
-from app import app, db, init_db
+from app import app, db, init_db, notify_family
 
 
 class TwoParentFlow(unittest.TestCase):
@@ -257,7 +257,7 @@ class TwoParentFlow(unittest.TestCase):
         cutoff = max(item["id"] for item in notices["items"])
         self.post(self.second, b["csrf"], "/api/messages", {"body": "Arrived after refresh"})
         self.post(self.first, a["csrf"], "/api/messages", {"body": "Other parent's notification"})
-        response = self.post(self.first, a["csrf"], "/api/notifications/read", {"message_through_id": cutoff})
+        response = self.post(self.first, a["csrf"], "/api/notifications/read", {"page": "messages", "through_id": cutoff})
         self.assertEqual(response.status_code, 200)
         remaining = self.first.get("/api/notifications").json
         self.assertEqual(remaining["unread"], 2)
@@ -266,7 +266,37 @@ class TwoParentFlow(unittest.TestCase):
         self.assertEqual(self.second.get("/api/notifications").json["unread"], 1)
         for invalid in ("bad", None, 0, -1):
             self.assertEqual(self.post(self.first, a["csrf"], "/api/notifications/read",
-                                      {"message_through_id": invalid}).status_code, 400)
+                                      {"page": "messages", "through_id": invalid}).status_code, 400)
+
+    def test_active_page_notifications_are_scoped_to_that_section(self):
+        a = self.register(self.first, "Parent One", "one@example.test")
+        b = self.register(self.second, "Parent Two", "two@example.test")
+        self.post(self.second, b["csrf"], "/api/family/join", {"invite_code": a["family"]["invite_code"]})
+        self.post(self.first, a["csrf"], "/api/notifications/read", {})
+        sections = {"messages": "message", "calendar": "event", "handovers": "handover",
+                    "decisions": "decision", "rules": "rule", "expenses": "expense",
+                    "evidence": "activity", "home": "home"}
+        with db() as conn:
+            for target in sections.values():
+                notify_family(conn, a["family"]["id"], b["user"]["id"], target + "_test",
+                              "Incoming change", target_type=target)
+        self.assertEqual(self.first.get("/api/notifications").json["unread"], len(sections))
+        for page, target in sections.items():
+            notices = self.first.get("/api/notifications").json
+            response = self.post(self.first, a["csrf"], "/api/notifications/read",
+                                 {"page": page, "through_id": max(item["id"] for item in notices["items"])})
+            self.assertEqual(response.status_code, 200)
+            remaining = self.first.get("/api/notifications").json
+            self.assertEqual(remaining["unread"], notices["unread"] - 1)
+            self.assertNotIn(target, {item["target_type"] for item in remaining["items"]})
+        self.assertEqual(self.second.get("/api/notifications").json["unread"], 0)
+        for invalid in ("unknown", "", None, []):
+            self.assertEqual(self.post(self.first, a["csrf"], "/api/notifications/read",
+                                      {"page": invalid, "through_id": 1}).status_code, 400)
+        self.post(self.first, a["csrf"], "/api/rules",
+                  {"title": "Bedtime", "value_text": "8pm", "rule_type": "custom"})
+        self.assertEqual(self.first.get("/api/notifications").json["unread"], 0)
+        self.assertEqual(self.second.get("/api/notifications").json["items"][0]["target_type"], "rule")
 
     def test_notifications_recurring_events_and_event_changes(self):
         a = self.register(self.first, "Parent One", "one@example.test")

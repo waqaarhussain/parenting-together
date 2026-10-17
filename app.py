@@ -627,17 +627,25 @@ def read_notifications():
     uid = session["user_id"]
     stamp = now_iso()
     with db() as conn:
-        if "message_through_id" in data:
+        if "page" in data:
+            targets = {"messages": ("message",), "calendar": ("event",),
+                       "handovers": ("handover",), "decisions": ("decision",),
+                       "expenses": ("expense",), "rules": ("rule",),
+                       "evidence": ("activity",), "home": ("home", "family", "child")}
+            page = data.get("page")
+            if not isinstance(page, str) or page not in targets:
+                return jsonify({"error": "Invalid notification page."}), 400
             try:
-                through_id = int(data["message_through_id"])
+                through_id = int(data.get("through_id"))
             except (ValueError, TypeError):
                 return jsonify({"error": "Invalid notification cursor."}), 400
             if through_id <= 0:
                 return jsonify({"error": "Invalid notification cursor."}), 400
             conn.execute(
-                """UPDATE notifications SET read_at=? WHERE family_id=? AND user_id=?
-                   AND notification_type='message' AND id<=? AND read_at IS NULL""",
-                (stamp, fid, uid, through_id),
+                "UPDATE notifications SET read_at=? WHERE family_id=? AND user_id=? "
+                "AND target_type IN (" + ",".join("?" for _ in targets[page]) + ") "
+                "AND id<=? AND read_at IS NULL",
+                (stamp, fid, uid, *targets[page], through_id),
             )
         elif data.get("id"):
             conn.execute(
@@ -1702,6 +1710,7 @@ def create_rule():
             (fid, uid, title, rule_type, value_text, now_iso()),
         )
         audit_event(conn, fid, uid, "created", "rule", cur.lastrowid, "Agreement rule added", {"type": rule_type})
+        notify_family(conn, fid, uid, "rule_created", "New agreement rule", title, "rule", cur.lastrowid)
     return jsonify({"ok": True, "id": cur.lastrowid}), 201
 
 
