@@ -391,6 +391,11 @@ async function refreshNotifications(force) {
   if(!force&&Date.now()-lastNotificationRefresh<5000)return null;
   lastNotificationRefresh=Date.now();
   var data=await api("/api/notifications");
+  if(state.page==="messages"&&!document.hidden&&data.items.some(function(item){return item.notification_type==="message";})){
+    var throughId=Math.max.apply(null,data.items.map(function(item){return item.id;}));
+    await api("/api/notifications/read",{method:"POST",json:{message_through_id:throughId}});
+    data=await api("/api/notifications");
+  }
   state.notificationUnread=data.unread;
   updateNotificationBadge();
   return data;

@@ -627,7 +627,19 @@ def read_notifications():
     uid = session["user_id"]
     stamp = now_iso()
     with db() as conn:
-        if data.get("id"):
+        if "message_through_id" in data:
+            try:
+                through_id = int(data["message_through_id"])
+            except (ValueError, TypeError):
+                return jsonify({"error": "Invalid notification cursor."}), 400
+            if through_id <= 0:
+                return jsonify({"error": "Invalid notification cursor."}), 400
+            conn.execute(
+                """UPDATE notifications SET read_at=? WHERE family_id=? AND user_id=?
+                   AND notification_type='message' AND id<=? AND read_at IS NULL""",
+                (stamp, fid, uid, through_id),
+            )
+        elif data.get("id"):
             conn.execute(
                 "UPDATE notifications SET read_at=COALESCE(read_at,?) WHERE id=? AND family_id=? AND user_id=?",
                 (stamp, int(data["id"]), fid, uid),

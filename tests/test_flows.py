@@ -248,6 +248,26 @@ class TwoParentFlow(unittest.TestCase):
         self.assertEqual(self.post(self.first, a["csrf"], "/api/messages/typing", {"typing": False}).status_code, 200)
         self.assertIsNone(self.second.get("/api/messages/status").json["typing_name"])
 
+    def test_active_chat_clears_only_its_message_notifications(self):
+        a = self.register(self.first, "Parent One", "one@example.test")
+        b = self.register(self.second, "Parent Two", "two@example.test")
+        self.post(self.second, b["csrf"], "/api/family/join", {"invite_code": a["family"]["invite_code"]})
+        self.post(self.second, b["csrf"], "/api/messages", {"body": "Already in chat"})
+        notices = self.first.get("/api/notifications").json
+        cutoff = max(item["id"] for item in notices["items"])
+        self.post(self.second, b["csrf"], "/api/messages", {"body": "Arrived after refresh"})
+        self.post(self.first, a["csrf"], "/api/messages", {"body": "Other parent's notification"})
+        response = self.post(self.first, a["csrf"], "/api/notifications/read", {"message_through_id": cutoff})
+        self.assertEqual(response.status_code, 200)
+        remaining = self.first.get("/api/notifications").json
+        self.assertEqual(remaining["unread"], 2)
+        self.assertEqual({item["notification_type"] for item in remaining["items"]}, {"family_joined", "message"})
+        self.assertTrue(all(item["body"] != "Already in chat" for item in remaining["items"]))
+        self.assertEqual(self.second.get("/api/notifications").json["unread"], 1)
+        for invalid in ("bad", None, 0, -1):
+            self.assertEqual(self.post(self.first, a["csrf"], "/api/notifications/read",
+                                      {"message_through_id": invalid}).status_code, 400)
+
     def test_notifications_recurring_events_and_event_changes(self):
         a = self.register(self.first, "Parent One", "one@example.test")
         b = self.register(self.second, "Parent Two", "two@example.test")

@@ -72,3 +72,21 @@ test('live page refresh preserves unsent form values and scroll position',async(
   await ctx.refreshLivePage();
   assert.equal(inputs[0].value,'unsaved rule');assert.equal(inputs[1].value,'2026-10-01');assert.equal(container.scrollTop,47);
 });
+
+test('message notifications clear only while viewing the visible Messages page',async()=>{
+  for(const [page,hidden,clears] of [['messages',false,true],['home',false,false],['messages',true,false]]){
+    const calls=[];
+    const items=[{id:7,notification_type:'message'},{id:6,notification_type:'event_created'}];
+    const ctx={state:{me:{user:{id:1}},page},document:{hidden},lastNotificationRefresh:0,
+      Date,updateNotificationBadge(){},api:async(path,options)=>{
+        calls.push({path,options});
+        if(options){assert.equal(options.json.message_through_id,7);return {ok:true};}
+        return calls.length>1?{unread:1,items:[items[1]]}:{unread:2,items};
+      }};
+    vm.createContext(ctx);
+    vm.runInContext(source.slice(source.indexOf('async function refreshNotifications('),source.indexOf('async function openNotifications(')),ctx);
+    await ctx.refreshNotifications(true);
+    assert.equal(calls.filter(call=>call.options).length,clears?1:0);
+    assert.equal(ctx.state.notificationUnread,clears?1:2);
+  }
+});
