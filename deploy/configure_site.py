@@ -47,7 +47,9 @@ def detect_public_ip():
         return public_ip(os.environ['PT_PUBLIC_IP'])
     try:
         interfaces = json.loads(subprocess.check_output(['ip', '-j', 'address', 'show', 'scope', 'global'], timeout=5))
-        candidates = [item['local'] for interface in interfaces for item in interface.get('addr_info', [])]
+        candidates = [item['local'] for interface in interfaces if isinstance(interface, dict)
+                      for item in (interface.get('addr_info') or []) if isinstance(item, dict)
+                      and isinstance(item.get('local'), str)]
         for value in sorted(candidates, key=lambda value: ':' in value):
             try:
                 return public_ip(value)
